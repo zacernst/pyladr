@@ -1,0 +1,19 @@
+% Boolean ring commutativity: x*x = x implies x*y = y*x
+% Medium difficulty
+
+assign(max_seconds, 30).
+
+formulas(sos).
+  x + 0 = x.
+  x + (-x) = 0.
+  (x + y) + z = x + (y + z).
+  x + y = y + x.
+  (x * y) * z = x * (y * z).
+  x * (y + z) = (x * y) + (x * z).
+  (x + y) * z = (x * z) + (y * z).
+  x * x = x.
+end_of_list.
+
+formulas(goals).
+  x * y = y * x.
+end_of_list.

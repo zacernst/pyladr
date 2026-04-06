@@ -1,0 +1,109 @@
+============================== Prover9 ===============================
+Prover9 (64) version 2017-11A (CIIRC), November 2017.
+Process 84595 was started by zernst on QQQ4DY4F3F,
+Mon Apr  6 10:42:59 2026
+The command was "bin/prover9 -f tests/fixtures/inputs/identity_only.in".
+============================== end of head ===========================
+
+============================== INPUT =================================
+
+% Reading from file tests/fixtures/inputs/identity_only.in
+
+
+formulas(sos).
+e * x = x.
+end_of_list.
+
+formulas(goals).
+e * e = e.
+end_of_list.
+
+============================== end of input ==========================
+
+============================== PROCESS NON-CLAUSAL FORMULAS ==========
+
+% Formulas that are not ordinary clauses:
+1 e * e = e # label(non_clause) # label(goal).  [goal].
+
+============================== end of process non-clausal formulas ===
+
+============================== PROCESS INITIAL CLAUSES ===============
+
+% Clauses before input processing:
+
+formulas(usable).
+end_of_list.
+
+formulas(sos).
+e * x = x.  [assumption].
+e * e != e.  [deny(1)].
+end_of_list.
+
+formulas(demodulators).
+end_of_list.
+
+============================== PREDICATE ELIMINATION =================
+
+No predicates eliminated.
+
+============================== end predicate elimination =============
+
+Auto_denials:  (no changes).
+
+Term ordering decisions:
+Predicate symbol precedence:  predicate_order([ = ]).
+Function symbol precedence:  function_order([ e, * ]).
+After inverse_order:  (no changes).
+Unfolding symbols: (none).
+
+Auto_inference settings:
+  % set(paramodulation).  % (positive equality literals)
+
+Auto_process settings:  (no changes).
+
+kept:      2 e * x = x.  [assumption].
+           3 e * e != e.  [deny(1)].
+-------- Proof 1 -------- 
+
+============================== PROOF =================================
+
+% Proof 1 at 0.00 (+ 0.00) seconds.
+% Length of proof is 4.
+% Level of proof is 2.
+% Maximum clause weight is 5.000.
+% Given clauses 0 (0.000 givens/level).
+
+1 e * e = e # label(non_clause) # label(goal).  [goal].
+2 e * x = x.  [assumption].
+3 e * e != e.  [deny(1)].
+4 $F.  [copy(3),rewrite([2(3)]),xx(a)].
+
+============================== end of proof ==========================
+
+============================== STATISTICS ============================
+
+Given=0. Generated=2. Kept=1. proofs=1.
+Usable=0. Sos=0. Demods=1. Limbo=1, Disabled=2. Hints=0.
+Kept_by_rule=0, Deleted_by_rule=0.
+Forward_subsumed=0. Back_subsumed=0.
+Sos_limit_deleted=0. Sos_displaced=0. Sos_removed=0.
+New_demodulators=1 (0 lex), Back_demodulated=0. Back_unit_deleted=0.
+Demod_attempts=5. Demod_rewrites=1.
+Res_instance_prunes=0. Para_instance_prunes=0. Basic_paramod_prunes=0.
+Nonunit_fsub_feature_tests=0. Nonunit_bsub_feature_tests=0.
+Megabytes=0.02.
+User_CPU=0.00, System_CPU=0.00, Wall_clock=0.
+
+============================== end of statistics =====================
+
+============================== end of search =========================
+
+THEOREM PROVED
+
+THEOREM PROVED
+
+Exiting with 1 proof.
+
+------ process 84595 exit (max_proofs) ------
+
+Process 84595 exit (max_proofs) Mon Apr  6 10:42:59 2026

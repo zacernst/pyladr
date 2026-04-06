@@ -1,0 +1,13 @@
+% Lattice theory: verify absorption law derivation
+formulas(sos).
+  x ^ y = y ^ x.
+  x v y = y v x.
+  (x ^ y) ^ z = x ^ (y ^ z).
+  (x v y) v z = x v (y v z).
+  x ^ (x v y) = x.
+  x v (x ^ y) = x.
+end_of_list.
+
+formulas(goals).
+  x ^ x = x.
+end_of_list.

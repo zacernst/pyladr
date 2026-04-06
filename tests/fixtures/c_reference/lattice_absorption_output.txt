@@ -1,0 +1,184 @@
+============================== Prover9 ===============================
+Prover9 (64) version 2017-11A (CIIRC), November 2017.
+Process 84598 was started by zernst on QQQ4DY4F3F,
+Mon Apr  6 10:42:59 2026
+The command was "bin/prover9 -f tests/fixtures/inputs/lattice_absorption.in".
+============================== end of head ===========================
+
+============================== INPUT =================================
+
+% Reading from file tests/fixtures/inputs/lattice_absorption.in
+
+
+formulas(sos).
+x ^ y = y ^ x.
+x v y = y v x.
+(x ^ y) ^ z = x ^ (y ^ z).
+(x v y) v z = x v (y v z).
+x ^ (x v y) = x.
+x v (x ^ y) = x.
+end_of_list.
+
+formulas(goals).
+x ^ x = x.
+end_of_list.
+
+============================== end of input ==========================
+
+============================== PROCESS NON-CLAUSAL FORMULAS ==========
+
+% Formulas that are not ordinary clauses:
+1 x ^ x = x # label(non_clause) # label(goal).  [goal].
+
+============================== end of process non-clausal formulas ===
+
+============================== PROCESS INITIAL CLAUSES ===============
+
+% Clauses before input processing:
+
+formulas(usable).
+end_of_list.
+
+formulas(sos).
+x ^ y = y ^ x.  [assumption].
+x v y = y v x.  [assumption].
+(x ^ y) ^ z = x ^ (y ^ z).  [assumption].
+(x v y) v z = x v (y v z).  [assumption].
+x ^ (x v y) = x.  [assumption].
+x v (x ^ y) = x.  [assumption].
+c1 ^ c1 != c1.  [deny(1)].
+end_of_list.
+
+formulas(demodulators).
+end_of_list.
+
+============================== PREDICATE ELIMINATION =================
+
+No predicates eliminated.
+
+============================== end predicate elimination =============
+
+Auto_denials:  (no changes).
+
+Term ordering decisions:
+Predicate symbol precedence:  predicate_order([ = ]).
+Function symbol precedence:  function_order([ c1, ^, v ]).
+After inverse_order:  (no changes).
+Unfolding symbols: (none).
+
+Auto_inference settings:
+  % set(paramodulation).  % (positive equality literals)
+
+Auto_process settings:  (no changes).
+
+
+% Operation ^ is commutative; C redundancy checks enabled.
+kept:      2 x ^ y = y ^ x.  [assumption].
+
+% Operation v is commutative; C redundancy checks enabled.
+kept:      3 x v y = y v x.  [assumption].
+kept:      4 (x ^ y) ^ z = x ^ (y ^ z).  [assumption].
+kept:      5 (x v y) v z = x v (y v z).  [assumption].
+kept:      6 x ^ (x v y) = x.  [assumption].
+kept:      7 x v (x ^ y) = x.  [assumption].
+kept:      8 c1 ^ c1 != c1.  [deny(1)].
+
+============================== end of process initial clauses ========
+
+============================== CLAUSES FOR SEARCH ====================
+
+% Clauses after input processing:
+
+formulas(usable).
+end_of_list.
+
+formulas(sos).
+2 x ^ y = y ^ x.  [assumption].
+3 x v y = y v x.  [assumption].
+4 (x ^ y) ^ z = x ^ (y ^ z).  [assumption].
+5 (x v y) v z = x v (y v z).  [assumption].
+6 x ^ (x v y) = x.  [assumption].
+7 x v (x ^ y) = x.  [assumption].
+8 c1 ^ c1 != c1.  [deny(1)].
+end_of_list.
+
+formulas(demodulators).
+2 x ^ y = y ^ x.  [assumption].
+        % (lex-dep)
+3 x v y = y v x.  [assumption].
+        % (lex-dep)
+4 (x ^ y) ^ z = x ^ (y ^ z).  [assumption].
+5 (x v y) v z = x v (y v z).  [assumption].
+6 x ^ (x v y) = x.  [assumption].
+7 x v (x ^ y) = x.  [assumption].
+end_of_list.
+
+============================== end of clauses for search =============
+
+============================== SEARCH ================================
+
+% Starting search at 0.00 seconds.
+
+given #1 (I,wt=7): 2 x ^ y = y ^ x.  [assumption].
+
+given #2 (I,wt=7): 3 x v y = y v x.  [assumption].
+
+given #3 (I,wt=11): 4 (x ^ y) ^ z = x ^ (y ^ z).  [assumption].
+
+% Operation ^ is associative-commutative; CAC redundancy checks enabled.
+% back CAC tautology: 9 x ^ (y ^ z) = z ^ (x ^ y).  [para(4(a,1),2(a,1))].
+
+given #4 (I,wt=11): 5 (x v y) v z = x v (y v z).  [assumption].
+
+% Operation v is associative-commutative; CAC redundancy checks enabled.
+% back CAC tautology: 11 x v (y v z) = z v (x v y).  [para(5(a,1),3(a,1))].
+
+given #5 (I,wt=7): 6 x ^ (x v y) = x.  [assumption].
+
+given #6 (I,wt=7): 7 x v (x ^ y) = x.  [assumption].
+-------- Proof 1 -------- 
+
+============================== PROOF =================================
+
+% Proof 1 at 0.00 (+ 0.00) seconds.
+% Length of proof is 6.
+% Level of proof is 2.
+% Maximum clause weight is 7.000.
+% Given clauses 6 (3.000 givens/level).
+
+1 x ^ x = x # label(non_clause) # label(goal).  [goal].
+6 x ^ (x v y) = x.  [assumption].
+7 x v (x ^ y) = x.  [assumption].
+8 c1 ^ c1 != c1.  [deny(1)].
+21 x ^ x = x.  [para(7(a,1),6(a,1,2))].
+22 $F.  [resolve(21,a,8,a)].
+
+============================== end of proof ==========================
+
+============================== STATISTICS ============================
+
+Given=6. Generated=53. Kept=20. proofs=1.
+Usable=6. Sos=7. Demods=16. Limbo=4, Disabled=9. Hints=0.
+Kept_by_rule=0, Deleted_by_rule=0.
+Forward_subsumed=33. Back_subsumed=0.
+Sos_limit_deleted=0. Sos_displaced=0. Sos_removed=0.
+New_demodulators=18 (6 lex), Back_demodulated=0. Back_unit_deleted=0.
+Demod_attempts=363. Demod_rewrites=52.
+Res_instance_prunes=0. Para_instance_prunes=0. Basic_paramod_prunes=0.
+Nonunit_fsub_feature_tests=0. Nonunit_bsub_feature_tests=0.
+Megabytes=0.06.
+User_CPU=0.00, System_CPU=0.00, Wall_clock=0.
+
+============================== end of statistics =====================
+
+============================== end of search =========================
+
+THEOREM PROVED
+
+THEOREM PROVED
+
+Exiting with 1 proof.
+
+------ process 84598 exit (max_proofs) ------
+
+Process 84598 exit (max_proofs) Mon Apr  6 10:42:59 2026

@@ -1,0 +1,14 @@
+% BA1: Boolean algebra single axiom (Huntington) - known solvable, medium
+% Derive commutativity of join from Huntington axiom
+
+assign(max_seconds, 60).
+
+formulas(sos).
+  -(-x + y) + -(-x + -y) = x.     % Huntington axiom
+  x + y = y + x.                    % commutativity
+  (x + y) + z = x + (y + z).        % associativity
+end_of_list.
+
+formulas(goals).
+  --(x) = x.                        % double negation
+end_of_list.

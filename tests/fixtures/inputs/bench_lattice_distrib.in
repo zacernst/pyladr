@@ -1,0 +1,19 @@
+% Lattice theory: modular law implies a specific distributive property
+% Medium-hard difficulty
+
+assign(max_seconds, 30).
+
+formulas(sos).
+  x ^ y = y ^ x.
+  x v y = y v x.
+  (x ^ y) ^ z = x ^ (y ^ z).
+  (x v y) v z = x v (y v z).
+  x ^ (x v y) = x.
+  x v (x ^ y) = x.
+  % Modular law
+  x ^ (y v (x ^ z)) = (x ^ y) v (x ^ z).
+end_of_list.
+
+formulas(goals).
+  (x v y) ^ (x v z) = x v (y ^ (x v z)).
+end_of_list.

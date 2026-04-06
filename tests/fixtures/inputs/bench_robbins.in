@@ -1,0 +1,14 @@
+% Robbins algebra problem - historically significant, medium difficulty
+% Proves that Robbins algebras are Boolean algebras
+
+assign(max_seconds, 60).
+
+formulas(sos).
+  x + y = y + x.                    % commutativity
+  (x + y) + z = x + (y + z).        % associativity
+  -(-x + y) + -(-x + -y) = x.       % Robbins axiom
+end_of_list.
+
+formulas(goals).
+  --x = x.                           % double negation
+end_of_list.

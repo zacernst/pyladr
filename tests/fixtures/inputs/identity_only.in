@@ -1,0 +1,8 @@
+% Trivial: prove e*e=e from left identity
+formulas(sos).
+  e * x = x.
+end_of_list.
+
+formulas(goals).
+  e * e = e.
+end_of_list.

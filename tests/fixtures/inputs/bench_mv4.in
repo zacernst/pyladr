@@ -1,0 +1,14 @@
+% Group theory: derive right inverse from left inverse
+% Takes measurable time due to search space
+
+assign(max_seconds, 30).
+
+formulas(sos).
+  e * x = x.
+  x' * x = e.
+  (x * y) * z = x * (y * z).
+end_of_list.
+
+formulas(goals).
+  x * x' = e.
+end_of_list.
