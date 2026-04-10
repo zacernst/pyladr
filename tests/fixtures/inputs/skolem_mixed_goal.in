@@ -1,0 +1,14 @@
+% Mixed constants and variables in goal
+% Goal: f(x, a) = f(a, x)  (implicit ∀x)
+% Negation: ∃x f(x,a) ≠ f(a,x)
+% Skolemization: f(c1,a) ≠ f(a,c1) -- only x becomes Skolem, a stays
+%
+% This tests that constants in goals are NOT Skolemized
+
+formulas(sos).
+  f(x, y) = f(y, x).
+end_of_list.
+
+formulas(goals).
+  f(x, a) = f(a, x).
+end_of_list.

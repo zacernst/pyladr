@@ -1,0 +1,16 @@
+% Basic Skolemization test: simple goal with variables
+% Goal P(x) is implicitly universally quantified: ∀x P(x)
+% Negation: ∃x ¬P(x)
+% Skolemization: ¬P(c1) where c1 is a fresh Skolem constant
+%
+% Expected: the denied goal should be -P(c1), NOT -P(x)
+
+formulas(sos).
+  P(a).
+  P(b).
+  a != b.
+end_of_list.
+
+formulas(goals).
+  P(x).
+end_of_list.

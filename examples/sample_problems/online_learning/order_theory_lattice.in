@@ -1,0 +1,31 @@
+% Order theory: prove that a lattice ordered by meet has the absorption law.
+%
+% Starting from partial order axioms plus existence of meets and joins,
+% prove the absorption law: x v (x ^ y) = x.  This requires building up
+% intermediate ordering facts, which produces many similar clauses — a
+% good scenario for online learning.
+%
+% Usage:
+%   python3 -m pyladr.apps.prover9 --online-learning -max_given 200 -f order_theory_lattice.in
+
+formulas(assumptions).
+  % Partial order axioms
+  le(x, x).                                        % Reflexivity
+  le(x, y) & le(y, x) -> x = y.                    % Antisymmetry
+  le(x, y) & le(y, z) -> le(x, z).                 % Transitivity
+
+  % Meet (greatest lower bound)
+  le(meet(x, y), x).
+  le(meet(x, y), y).
+  le(z, x) & le(z, y) -> le(z, meet(x, y)).
+
+  % Join (least upper bound)
+  le(x, join(x, y)).
+  le(y, join(x, y)).
+  le(x, z) & le(y, z) -> le(join(x, y), z).
+end_of_list.
+
+formulas(goals).
+  % Absorption: x join (x meet y) = x
+  join(a, meet(a, b)) = a.
+end_of_list.

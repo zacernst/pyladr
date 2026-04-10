@@ -1,0 +1,30 @@
+% Lattice distributivity: prove that distributivity of meet over join
+% follows from the dual distributive law.
+%
+% This is a medium-difficulty equational problem. The search generates many
+% structurally similar intermediate clauses, making it a good candidate for
+% online learning: the model learns which clause shapes are productive after
+% the first few dozen given clauses.
+%
+% Usage:
+%   python3 -m pyladr.apps.prover9 --online-learning -f lattice_distributivity.in
+
+formulas(assumptions).
+  % Lattice axioms
+  x ^ x = x.
+  x v x = x.
+  x ^ y = y ^ x.
+  x v y = y v x.
+  (x ^ y) ^ z = x ^ (y ^ z).
+  (x v y) v z = x v (y v z).
+  x ^ (x v y) = x.
+  x v (x ^ y) = x.
+
+  % Distributivity of join over meet (assumed)
+  x v (y ^ z) = (x v y) ^ (x v z).
+end_of_list.
+
+formulas(goals).
+  % Prove: distributivity of meet over join
+  a ^ (b v c) = (a ^ b) v (a ^ c).
+end_of_list.

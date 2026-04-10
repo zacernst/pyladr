@@ -1,0 +1,19 @@
+% Complex number theory problem requiring sophisticated guidance
+
+formulas(assumptions).
+  % Complex number axioms (simplified)
+  (a + b*i) + (c + d*i) = (a + c) + (b + d)*i.    % Addition
+  (a + b*i) * (c + d*i) = (a*c - b*d) + (a*d + b*c)*i.  % Multiplication
+  i * i = -1.                                       % i squared
+
+  % Field properties
+  x + 0 = x.
+  x * 1 = x.
+  exists y (x + y = 0).                            % Additive inverse
+  x != 0 -> exists y (x * y = 1).                 % Multiplicative inverse
+end_of_list.
+
+formulas(goals).
+  % Prove: |z|^2 = z * conjugate(z) = a^2 + b^2 for z = a + b*i
+  (a + b*i) * (a - b*i) = a*a + b*b.
+end_of_list.

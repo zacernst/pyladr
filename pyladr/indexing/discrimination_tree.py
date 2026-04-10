@@ -29,7 +29,7 @@ from typing import Any
 
 from pyladr.core.substitution import Context, Trail
 from pyladr.core.term import Term
-from pyladr.threading_guide import ReadWriteLock
+from pyladr.threading_guide import make_rw_lock
 
 
 # ── Node types matching C discrim.h ──────────────────────────────────────────
@@ -150,7 +150,7 @@ class DiscrimWild:
 
     def __init__(self) -> None:
         self._root = DiscrimNode(symbol=-1, node_type=_NodeType.DRIGID)
-        self._lock = ReadWriteLock()
+        self._lock = make_rw_lock()
         self._size = 0
 
     @property
@@ -407,7 +407,7 @@ class DiscrimBind:
 
     def __init__(self) -> None:
         self._root = DiscrimNode(symbol=-1, node_type=_NodeType.DRIGID)
-        self._lock = ReadWriteLock()
+        self._lock = make_rw_lock()
         self._size = 0
 
     @property
@@ -558,7 +558,7 @@ class Mindex:
         self._discrim_wild: DiscrimWild | None = None
         self._discrim_bind: DiscrimBind | None = None
         self._linear: list[tuple[Term, Any]] | None = None
-        self._lock = ReadWriteLock()
+        self._lock = make_rw_lock()
 
         if index_type == IndexType.DISCRIM_WILD:
             self._discrim_wild = DiscrimWild()

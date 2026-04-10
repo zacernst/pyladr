@@ -152,22 +152,26 @@ class Clause:
     initial: bool = False
     subsumer: bool = False
 
+    # Cached property — set in __post_init__, avoids repeated len() calls
+    _num_literals: int = 0
+
     def __post_init__(self) -> None:
         # Ensure literals is a tuple
         if not isinstance(self.literals, tuple):
             object.__setattr__(self, "literals", tuple(self.literals))
+        object.__setattr__(self, "_num_literals", len(self.literals))
 
     # ── Properties ────────────────────────────────────────────────────────
 
     @property
     def is_empty(self) -> bool:
         """Empty clause = FALSE = contradiction found."""
-        return len(self.literals) == 0
+        return self._num_literals == 0
 
     @property
     def is_unit(self) -> bool:
         """Unit clause has exactly one literal."""
-        return len(self.literals) == 1
+        return self._num_literals == 1
 
     @property
     def is_positive(self) -> bool:
@@ -196,7 +200,7 @@ class Clause:
 
     @property
     def num_literals(self) -> int:
-        return len(self.literals)
+        return self._num_literals
 
     @property
     def positive_literals(self) -> tuple[Literal, ...]:

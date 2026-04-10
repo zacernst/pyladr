@@ -1,0 +1,15 @@
+% Regression test: group commutativity should require nontrivial proof.
+%
+% Bug: denied goal -(x * y = y * x) with free variables
+% matches e * x = x trivially. Real proof needs ~20+ given clauses.
+
+formulas(sos).
+  e * x = x.
+  x' * x = e.
+  (x * y) * z = x * (y * z).
+  x * x = e.
+end_of_list.
+
+formulas(goals).
+  x * y = y * x.
+end_of_list.

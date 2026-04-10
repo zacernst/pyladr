@@ -89,6 +89,37 @@ class AtomicCounter:
             self._value = value
 
 
+class _NoOpContextManager:
+    """Pre-allocated no-op context manager for single-threaded mode."""
+
+    __slots__ = ()
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+
+_NOOP_CM = _NoOpContextManager()
+
+
+class NoOpReadWriteLock:
+    """No-op lock for single-threaded mode — zero overhead.
+
+    Drop-in replacement for ReadWriteLock that skips all locking.
+    Use when threading is not needed (the common case for search).
+    """
+
+    __slots__ = ()
+
+    def read_lock(self) -> _NoOpContextManager:
+        return _NOOP_CM
+
+    def write_lock(self) -> _NoOpContextManager:
+        return _NOOP_CM
+
+
 class ReadWriteLock:
     """Readers-writer lock for protecting shared data structures.
 
@@ -142,6 +173,30 @@ class ReadWriteLock:
                 self._writer_active = False
                 self._can_read.notify_all()
                 self._can_write.notify()
+
+
+# ── Module-level threading mode ──────────────────────────────────────────────
+
+# Default: single-threaded (no lock overhead).
+# Call set_threaded_mode(True) before search to enable real locks.
+_threaded_mode = False
+
+
+def set_threaded_mode(enabled: bool) -> None:
+    """Enable or disable threaded locking globally.
+
+    Must be called before any index construction. When disabled (default),
+    all ReadWriteLock instances created via ``make_rw_lock()`` are no-ops.
+    """
+    global _threaded_mode
+    _threaded_mode = enabled
+
+
+def make_rw_lock() -> ReadWriteLock | NoOpReadWriteLock:
+    """Create the appropriate lock for the current threading mode."""
+    if _threaded_mode:
+        return ReadWriteLock()
+    return NoOpReadWriteLock()
 
 
 class ThreadSafeList(list[T]):

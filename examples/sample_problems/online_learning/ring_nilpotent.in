@@ -1,0 +1,36 @@
+% Ring theory: prove properties of nilpotent elements.
+%
+% In a ring where x^3 = 0 for all x (nil-3 ring), prove that the ring is
+% anti-commutative: x * y = -(y * x).
+%
+% This is a hard problem with a large search space. Many intermediate terms
+% share structural patterns, so online learning can recognise productive
+% clause shapes and prioritise them over the flood of unproductive rewrites.
+%
+% Usage:
+%   python3 -m pyladr.apps.prover9 --online-learning -max_given 500 -f ring_nilpotent.in
+
+formulas(assumptions).
+  % Abelian group under addition
+  x + 0 = x.
+  0 + x = x.
+  x + n(x) = 0.
+  n(x) + x = 0.
+  (x + y) + z = x + (y + z).
+  x + y = y + x.
+
+  % Ring multiplication distributes over addition
+  x * (y + z) = (x * y) + (x * z).
+  (x + y) * z = (x * z) + (y * z).
+
+  % Associativity of multiplication
+  (x * y) * z = x * (y * z).
+
+  % Nil-3 condition: x * x * x = 0
+  (x * x) * x = 0.
+end_of_list.
+
+formulas(goals).
+  % Anti-commutativity: x * y = -(y * x)
+  a * b = n(b * a).
+end_of_list.

@@ -1,0 +1,13 @@
+% Can we prove commutativity from associativity alone? (Spoiler: No, but interesting search!)
+
+formulas(assumptions).
+  e * x = x.           % Left identity
+  x * e = x.           % Right identity
+  i(x) * x = e.        % Left inverse
+  x * i(x) = e.        % Right inverse
+  (x * y) * z = x * (y * z).  % Associativity
+end_of_list.
+
+formulas(goals).
+  x * y = y * x.       % Commutativity (unprovable from these axioms)
+end_of_list.

@@ -31,6 +31,7 @@ from pyladr.inference.resolution import (
     merge_literals,
     renumber_variables,
 )
+from pyladr.inference.hyper_resolution import all_hyper_resolvents
 from pyladr.inference.paramodulation import (
     orient_equalities,
     para_from_into,
@@ -44,10 +45,14 @@ from pyladr.inference.demodulation import (
 )
 from pyladr.inference.subsumption import (
     back_subsume_from_lists,
+    forward_subsume,
     forward_subsume_from_lists,
     subsumes,
 )
+from pyladr.indexing.literal_index import LiteralIndex
 from pyladr.parallel.inference_engine import ParallelInferenceEngine, ParallelSearchConfig
+from pyladr.search.lazy_demod import LazyDemodState
+from pyladr.search.priority_sos import PrioritySOS
 from pyladr.search.selection import GivenSelection, default_clause_weight
 from pyladr.search.state import ClauseList, SearchState
 from pyladr.search.statistics import SearchStatistics
@@ -83,15 +88,17 @@ class SearchOptions:
     # Inference rules
     binary_resolution: bool = True
     paramodulation: bool = False
+    hyper_resolution: bool = False
     factoring: bool = True
     para_into_vars: bool = False
 
-    # Limits (C: max_given, max_kept, max_seconds, max_generated, max_proofs)
+    # Limits (C: max_given, max_kept, max_seconds, max_generated, max_proofs, max_weight)
     max_given: int = -1       # -1 = no limit
     max_kept: int = -1
     max_seconds: float = -1.0
     max_generated: int = -1
     max_proofs: int = 1
+    max_weight: float = -1.0  # -1 = no limit
 
     # Demodulation
     demodulation: bool = False
@@ -106,6 +113,15 @@ class SearchOptions:
 
     # Parallelization
     parallel: ParallelSearchConfig | None = None
+
+    # Priority SOS: heap-based O(log n) weight selection + O(1) removal
+    priority_sos: bool = False
+
+    # Lazy demodulation: defer lex-dependent rewrites until selection
+    lazy_demod: bool = False
+
+    # SOS limit: max clauses in SOS before culling (C: sos_limit)
+    sos_limit: int = -1  # -1 = no limit
 
     # Output
     print_given: bool = True
@@ -171,6 +187,7 @@ class GivenClauseSearch:
     __slots__ = (
         "_opts", "_state", "_selection", "_proofs", "_all_clauses",
         "_symbol_table", "_demod_index", "_parallel_engine",
+        "_subsump_idx", "_lazy_demod",
     )
 
     def __init__(
@@ -181,12 +198,21 @@ class GivenClauseSearch:
     ) -> None:
         self._opts = options or SearchOptions()
         self._state = SearchState()
+        # Replace SOS with heap-based PrioritySOS when enabled
+        if self._opts.priority_sos:
+            self._state.sos = PrioritySOS("sos")
         self._selection = selection or GivenSelection()
         self._proofs: list[Proof] = []
         self._all_clauses: dict[int, Clause] = {}
         self._symbol_table = symbol_table or SymbolTable()
         self._demod_index = DemodulatorIndex()
+        self._lazy_demod: LazyDemodState | None = (
+            LazyDemodState() if self._opts.lazy_demod else None
+        )
         self._parallel_engine = ParallelInferenceEngine(self._opts.parallel)
+        # Literal index for forward subsumption (C: Glob.lindex)
+        # first_only=True: only index first literal of each clause (C: lindex_update_first)
+        self._subsump_idx = LiteralIndex(first_only=True)
 
     @property
     def state(self) -> SearchState:
@@ -264,9 +290,16 @@ class GivenClauseSearch:
     def _process_initial_clauses(self) -> ExitCode | None:
         """Process initial clauses. Matches C index_and_process_initial_clauses().
 
-        1. Weigh and assign IDs to all initial clauses
-        2. Index usable clauses for resolution
-        3. Check for empty clauses (immediate proof)
+        C Prover9 processes each initial SOS clause as a "given" clause in
+        insertion order (FIFO), generating all inferences between initial
+        clauses BEFORE the ratio-based selection loop begins. This is shown
+        in C output as "given #N (I,wt=...)" lines.
+
+        Steps:
+        1. Orient equalities, weigh, and index usable clauses
+        2. Process each SOS clause as "initial given": move to usable,
+           index, generate inferences, process results
+        3. Only after ALL initials are processed does the main loop start
         """
         # Orient equalities if paramodulation is enabled
         if self._opts.paramodulation:
@@ -279,14 +312,61 @@ class GivenClauseSearch:
         for c in self._state.usable:
             c.weight = default_clause_weight(c)
             self._state.index_clashable(c, insert=True)
+            self._subsump_idx.update(c, insert=True)
 
-        # Process SOS clauses: weigh, check for empty clause
+        # Weigh SOS clauses and check for immediate empty clause
         for c in self._state.sos:
             c.weight = default_clause_weight(c)
-
-            # Check for empty clause (immediate proof)
             if c.is_empty:
                 return self._handle_proof(c)
+
+        # Process each initial SOS clause as a "given" clause in FIFO order.
+        # This matches C Prover9's index_and_process_initial_clauses() which
+        # selects each initial clause, moves it to usable, indexes it, and
+        # generates inferences. The "(I)" selection type in C output.
+        initial_sos = list(self._state.sos)
+        for c in initial_sos:
+            self._state.sos.remove(c)
+
+            self._state.stats.given += 1
+
+            # Print given clause with (I) for Initial, matching C format
+            if self._opts.print_given and not self._opts.quiet:
+                wt = int(c.weight) if c.weight == int(c.weight) else c.weight
+                clause_str = self._format_clause_std(c)
+                print(
+                    f"given #{self._state.stats.given} "
+                    f"(I,wt={wt}): {clause_str}"
+                )
+
+            # Move to usable and index (C: clist_append + index_clashable)
+            self._state.usable.append(c)
+            self._state.index_clashable(c, insert=True)
+            self._subsump_idx.update(c, insert=True)
+
+            # Check demodulator status
+            if self._opts.demodulation:
+                if self._opts.paramodulation:
+                    orient_equalities(c, self._symbol_table)
+                dtype = demodulator_type(
+                    c, self._symbol_table, self._opts.lex_dep_demod_lim,
+                )
+                if dtype != DemodType.NOT_DEMODULATOR:
+                    self._demod_index.insert(c, dtype)
+                    self._state.stats.new_demodulators += 1
+                    self._state.demods.append(c)
+                    if self._lazy_demod is not None:
+                        self._lazy_demod.bump_version()
+
+            # Generate inferences from this initial clause
+            exit_code = self._given_infer(c)
+            if exit_code is not None:
+                return exit_code
+
+            # Process limbo (back-subsumption, move to SOS)
+            exit_code = self._limbo_process()
+            if exit_code is not None:
+                return exit_code
 
         return None
 
@@ -316,6 +396,13 @@ class GivenClauseSearch:
         if given is None:
             return None  # SOS became empty during selection
 
+        # Lazy demodulation: ensure clause is fully reduced before use
+        if self._lazy_demod is not None and self._lazy_demod.needs_reduction(given):
+            given = self._lazy_demod.ensure_fully_reduced(
+                given, self._demod_index, self._symbol_table,
+                self._opts.lex_order_vars, self._opts.demod_step_limit,
+            )
+
         self._state.stats.given += 1
 
         # Check max_given limit (C: over_parm_limit check)
@@ -332,15 +419,14 @@ class GivenClauseSearch:
         ):
             return ExitCode.MAX_SECONDS_EXIT
 
-        # Print given clause (C: print_given)
+        # Print given clause (C: print_given) — output directly to stdout
+        # matching C fwrite_clause() behavior in the search loop.
         if self._opts.print_given and not self._opts.quiet:
             wt = int(given.weight) if given.weight == int(given.weight) else given.weight
-            logger.info(
-                "given #%d (%s,wt=%s): %s",
-                self._state.stats.given,
-                selection_type,
-                wt,
-                given.to_str(),
+            clause_str = self._format_clause_std(given)
+            print(
+                f"given #{self._state.stats.given} "
+                f"({selection_type},wt={wt}): {clause_str}"
             )
 
         # Move to usable and index (C: clist_append + index_clashable)
@@ -421,6 +507,13 @@ class GivenClauseSearch:
                         if exit_code is not None:
                             return exit_code
 
+        if self._opts.hyper_resolution:
+            resolvents = all_hyper_resolvents(given, usable_snapshot)
+            for resolvent in resolvents:
+                exit_code = self._cl_process(resolvent)
+                if exit_code is not None:
+                    return exit_code
+
         if self._opts.factoring:
             factors = factor(given)
             for f in factors:
@@ -475,12 +568,17 @@ class GivenClauseSearch:
 
         # Forward demodulation (C: demodulate_clause in cl_process_simplify)
         if self._opts.demodulation and not self._demod_index.is_empty:
-            c, steps = demodulate_clause(
-                c, self._demod_index, self._symbol_table,
-                self._opts.lex_order_vars, self._opts.demod_step_limit,
-            )
-            if steps:
-                self._state.stats.demodulated += 1
+            if self._lazy_demod is not None:
+                # Lazy demod: skip eager demod, mark for deferred reduction
+                self._lazy_demod.mark_partially_reduced(c)
+                self._lazy_demod.stats.deferred_demods += 1
+            else:
+                c, steps = demodulate_clause(
+                    c, self._demod_index, self._symbol_table,
+                    self._opts.lex_order_vars, self._opts.demod_step_limit,
+                )
+                if steps:
+                    self._state.stats.demodulated += 1
 
         # Simplify trivial equality literals (C: simplify_literals2):
         # Negative -(t=t) is always false → remove the literal
@@ -534,6 +632,11 @@ class GivenClauseSearch:
         # Weight the clause
         c.weight = default_clause_weight(c)
 
+        # Max weight check (C: cl_process_delete weight limit)
+        if self._opts.max_weight > 0 and c.weight > self._opts.max_weight:
+            self._state.stats.subsumed += 1
+            return True
+
         # Max kept limit check
         if (
             self._opts.max_kept > 0
@@ -552,12 +655,11 @@ class GivenClauseSearch:
     def _forward_subsumed(self, c: Clause) -> bool:
         """Check if c is forward subsumed by any existing clause.
 
-        Uses full matching-based subsumption (matching C forward_subsumption).
-        Checks usable, sos, and limbo lists for a clause that subsumes c.
+        Uses indexed subsumption via LiteralIndex (matching C forward_subsumption
+        with lindex). Retrieves generalizations of c's literals from the index.
         """
-        subsumer = forward_subsume_from_lists(
-            c,
-            [self._state.usable, self._state.sos, self._state.limbo],
+        subsumer = forward_subsume(
+            c, self._subsump_idx.pos, self._subsump_idx.neg,
         )
         return subsumer is not None
 
@@ -601,8 +703,11 @@ class GivenClauseSearch:
                 self._demod_index.insert(c, dtype)
                 self._state.stats.new_demodulators += 1
                 self._state.demods.append(c)
+                if self._lazy_demod is not None:
+                    self._lazy_demod.bump_version()
 
-        # Index for forward subsumption (C: index_literals)
+        # Index for forward subsumption (C: index_literals / lindex_update_first)
+        self._subsump_idx.update(c, insert=True)
         # Add to limbo (C: clist_append(c, Glob.limbo))
         self._state.limbo.append(c)
 
@@ -661,6 +766,7 @@ class GivenClauseSearch:
                 self._state.stats.back_subsumed += 1
                 # Remove from whichever list it's in and deindex
                 self._state.index_clashable(victim, insert=False)
+                self._subsump_idx.update(victim, insert=False)
                 self._state.usable.remove(victim)
                 self._state.sos.remove(victim)
                 self._state.disabled.append(victim)
@@ -686,6 +792,7 @@ class GivenClauseSearch:
                         self._state.stats.back_demodulated += 1
                         # Disable original, reprocess the rewritten version
                         self._state.index_clashable(victim, insert=False)
+                        self._subsump_idx.update(victim, insert=False)
                         self._state.usable.remove(victim)
                         self._state.sos.remove(victim)
                         self._state.disabled.append(victim)
@@ -704,7 +811,14 @@ class GivenClauseSearch:
                         if exit_code is not None:
                             return exit_code
 
-            self._state.sos.append(c)
+            # SOS limit check (C: sos_limit — discard if SOS is full)
+            if (
+                self._opts.sos_limit > 0
+                and len(self._state.sos) >= self._opts.sos_limit
+            ):
+                self._state.stats.sos_limit_deleted += 1
+            else:
+                self._state.sos.append(c)
         return None
 
     # ── Proof handling ──────────────────────────────────────────────────
@@ -774,6 +888,29 @@ class GivenClauseSearch:
         # Sort by ID for deterministic output
         proof_clauses.sort(key=lambda c: c.id)
         return proof_clauses
+
+    # ── Clause formatting ──────────────────────────────────────────────
+
+    def _format_clause_std(self, clause: Clause) -> str:
+        """Format clause matching C CL_FORM_STD (ID, literals, justification)."""
+        st = self._symbol_table
+        parts: list[str] = []
+        if clause.id > 0:
+            parts.append(f"{clause.id} ")
+        if clause.is_empty:
+            parts.append("$F")
+        else:
+            lit_strs = []
+            for lit in clause.literals:
+                atom_str = lit.atom.to_str(st)
+                lit_strs.append(atom_str if lit.sign else f"-{atom_str}")
+            parts.append(" | ".join(lit_strs))
+        if clause.justification:
+            just = clause.justification[0]
+            parts.append(f".  [{just.just_type.name.lower()}].")
+        else:
+            parts.append(".")
+        return "".join(parts)
 
     # ── Result construction ─────────────────────────────────────────────
 

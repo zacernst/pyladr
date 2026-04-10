@@ -1,0 +1,12 @@
+% Simple group theory - prove identity element is unique
+formulas(assumptions).
+  % Group axioms
+  x * (y * z) = (x * y) * z.     % Associativity
+  x * e = x.                     % Right identity
+  exists y (x * y = e).          % Right inverse
+end_of_list.
+
+formulas(goals).
+  % Prove left identity: e * x = x
+  e * x = x.
+end_of_list.

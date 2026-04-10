@@ -1,0 +1,22 @@
+% Boolean algebra: uniqueness of complement
+% Medium difficulty - exercises forward subsumption heavily
+% Tests subsumption performance under many generated clauses
+
+assign(max_seconds, 60).
+
+formulas(sos).
+  x v y = y v x.
+  x ^ y = y ^ x.
+  (x v y) v z = x v (y v z).
+  (x ^ y) ^ z = x ^ (y ^ z).
+  x ^ (x v y) = x.
+  x v (x ^ y) = x.
+  x v x' = 1.
+  x ^ x' = 0.
+  x v 0 = x.
+  x ^ 1 = x.
+end_of_list.
+
+formulas(goals).
+  (x v y = 1 & x ^ y = 0) -> y = x'.
+end_of_list.

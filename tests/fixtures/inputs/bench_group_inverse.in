@@ -1,0 +1,15 @@
+% Group theory: right inverse from left inverse and left identity
+% Tests paramodulation-heavy search with moderate term depth
+% Exercises demodulation and back-demodulation
+
+assign(max_seconds, 30).
+
+formulas(sos).
+  e * x = x.
+  x' * x = e.
+  (x * y) * z = x * (y * z).
+end_of_list.
+
+formulas(goals).
+  x * x' = e.
+end_of_list.

@@ -11,6 +11,7 @@ from enum import IntEnum, auto
 from typing import Callable
 
 from pyladr.core.clause import Clause
+from pyladr.search.priority_sos import PrioritySOS
 from pyladr.search.state import ClauseList
 
 
@@ -103,12 +104,17 @@ class GivenSelection:
         rule = self._get_current_rule()
         self._advance_cycle()
 
-        # Select according to the rule's ordering
-        selected = self._select_by_order(sos, rule.order)
+        # PrioritySOS: pop methods handle removal internally
+        if isinstance(sos, PrioritySOS):
+            selected = self._pop_from_priority_sos(sos, rule.order)
+        else:
+            selected = self._select_by_order(sos, rule.order)
+            if selected is not None:
+                sos.remove(selected)
+
         if selected is None:
             return None, ""
 
-        sos.remove(selected)
         rule.selected += 1
         return selected, rule.name
 
@@ -128,6 +134,18 @@ class GivenSelection:
     def _advance_cycle(self) -> None:
         """Advance the cycle counter."""
         self._count += 1
+
+    @staticmethod
+    def _pop_from_priority_sos(
+        sos: PrioritySOS, order: SelectionOrder
+    ) -> Clause | None:
+        """Select and remove a clause from PrioritySOS. O(log n) / O(1)."""
+        if order == SelectionOrder.AGE:
+            return sos.pop_first()
+        if order == SelectionOrder.WEIGHT:
+            return sos.pop_lightest()
+        # RANDOM: fall back to age
+        return sos.pop_first()
 
     @staticmethod
     def _select_by_order(

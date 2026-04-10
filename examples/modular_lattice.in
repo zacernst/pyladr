@@ -1,0 +1,22 @@
+% Modular lattice: demonstrate online learning improving search over time
+
+formulas(assumptions).
+  % Lattice axioms
+  x v x = x.                        % Idempotent (join)
+  x ^ x = x.                        % Idempotent (meet)
+  x v y = y v x.                    % Commutative (join)
+  x ^ y = y ^ x.                    % Commutative (meet)
+  (x v y) v z = x v (y v z).        % Associative (join)
+  (x ^ y) ^ z = x ^ (y ^ z).        % Associative (meet)
+  x v (x ^ y) = x.                  % Absorption
+  x ^ (x v y) = x.                  % Absorption
+
+  % Modular law premise
+  x <= z -> x v (y ^ z) = (x v y) ^ z.  % Key modular property
+  x <= y <-> x v y = y.             % Order definition
+end_of_list.
+
+formulas(goals).
+  % Prove a consequence of modularity
+  (a ^ b) v (a ^ c) <= a ^ (b v (a ^ c)).
+end_of_list.

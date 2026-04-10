@@ -21,6 +21,7 @@ Demodulator types (matching C enum):
 from __future__ import annotations
 
 from enum import IntEnum, auto
+from typing import Any
 
 from pyladr.core.clause import Clause, Justification, JustType, Literal
 from pyladr.core.substitution import (
@@ -31,6 +32,7 @@ from pyladr.core.substitution import (
 )
 from pyladr.core.symbol import SymbolTable
 from pyladr.core.term import Term
+from pyladr.indexing import IndexType, Mindex
 from pyladr.inference.paramodulation import is_eq_atom, is_oriented_eq, is_renamable_flip
 from pyladr.ordering.termorder import term_greater
 
@@ -124,25 +126,55 @@ def demodulator_type(
 
 
 class DemodulatorIndex:
-    """Index of demodulators for efficient matching.
+    """Index of demodulators using discrimination tree for efficient matching.
 
-    Stores demodulators and provides matching against terms.
-    Uses linear scanning for now; can be upgraded to discrimination
-    tree indexing for performance.
+    Uses a DiscrimWild index on demodulator LHS (and RHS for bidirectional)
+    terms for O(log n) candidate retrieval instead of O(n) linear scanning.
+    retrieve_generalizations returns terms that generalize the query, which
+    is exactly what we need for one-way matching (demodulator LHS matches
+    against subterms of the clause being simplified).
     """
 
-    __slots__ = ("_demods",)
+    __slots__ = ("_demods", "_lhs_idx", "_rhs_idx")
 
     def __init__(self) -> None:
-        self._demods: list[tuple[Clause, DemodType]] = []
+        self._demods: dict[int, tuple[Clause, DemodType]] = {}
+        # Index LHS terms for left-to-right matching
+        self._lhs_idx: Mindex = Mindex(IndexType.DISCRIM_WILD)
+        # Index RHS terms for right-to-left matching (LEX_DEP_RL, LEX_DEP_BOTH)
+        self._rhs_idx: Mindex = Mindex(IndexType.DISCRIM_WILD)
 
     def insert(self, clause: Clause, dtype: DemodType) -> None:
         """Add a demodulator to the index."""
-        self._demods.append((clause, dtype))
+        cid = clause.id
+        self._demods[cid] = (clause, dtype)
+        atom = clause.literals[0].atom
+        alpha = atom.args[0]  # LHS
+        beta = atom.args[1]   # RHS
+
+        # Index LHS for left-to-right matching
+        if dtype in (DemodType.ORIENTED, DemodType.LEX_DEP_LR, DemodType.LEX_DEP_BOTH):
+            self._lhs_idx.insert(alpha, cid)
+
+        # Index RHS for right-to-left matching
+        if dtype in (DemodType.LEX_DEP_RL, DemodType.LEX_DEP_BOTH):
+            self._rhs_idx.insert(beta, cid)
 
     def remove(self, clause: Clause) -> None:
         """Remove a demodulator from the index."""
-        self._demods = [(c, d) for c, d in self._demods if c is not clause]
+        cid = clause.id
+        entry = self._demods.pop(cid, None)
+        if entry is None:
+            return
+        _, dtype = entry
+        atom = clause.literals[0].atom
+        alpha = atom.args[0]
+        beta = atom.args[1]
+
+        if dtype in (DemodType.ORIENTED, DemodType.LEX_DEP_LR, DemodType.LEX_DEP_BOTH):
+            self._lhs_idx.delete(alpha, cid)
+        if dtype in (DemodType.LEX_DEP_RL, DemodType.LEX_DEP_BOTH):
+            self._rhs_idx.delete(beta, cid)
 
     @property
     def is_empty(self) -> bool:
@@ -152,7 +184,18 @@ class DemodulatorIndex:
         return len(self._demods)
 
     def __iter__(self):
-        return iter(self._demods)
+        """Iterate all demodulators (for back-demodulation compatibility)."""
+        return iter(self._demods.values())
+
+    def find_lhs_candidates(self, query: Term) -> list[tuple[Clause, DemodType]]:
+        """Find demodulators whose LHS might match the query term."""
+        cids = self._lhs_idx.retrieve_generalizations(query)
+        return [self._demods[cid] for cid in cids if cid in self._demods]
+
+    def find_rhs_candidates(self, query: Term) -> list[tuple[Clause, DemodType]]:
+        """Find demodulators whose RHS might match the query term."""
+        cids = self._rhs_idx.retrieve_generalizations(query)
+        return [self._demods[cid] for cid in cids if cid in self._demods]
 
 
 # ── Core demodulation ────────────────────────────────────────────────────────
@@ -165,45 +208,67 @@ def _try_demod(
     symbol_table: SymbolTable,
     lex_order_vars: bool,
 ) -> Term | None:
-    """Try to rewrite term t using a single demodulator.
+    """Try to rewrite term t using a single demodulator (both directions).
 
     Returns the rewritten term if successful, None otherwise.
-
-    Tries matching the demodulator's alpha (and beta for bidirectional)
-    against t, then checks ordering constraints for lex-dependent demodulators.
+    Used by back_demodulatable which doesn't use indexed lookup.
     """
+    result = _try_demod_lhs(t, clause, dtype, symbol_table, lex_order_vars)
+    if result is not None:
+        return result
+    return _try_demod_rhs(t, clause, dtype, symbol_table, lex_order_vars)
+
+
+def _try_demod_lhs(
+    t: Term,
+    clause: Clause,
+    dtype: DemodType,
+    symbol_table: SymbolTable,
+    lex_order_vars: bool,
+) -> Term | None:
+    """Try left-to-right rewrite: match alpha against t, replace with beta."""
     atom = clause.literals[0].atom
     alpha = atom.args[0]
     beta = atom.args[1]
 
-    # Try left-to-right: match alpha against t, replace with beta
-    if dtype in (DemodType.ORIENTED, DemodType.LEX_DEP_LR, DemodType.LEX_DEP_BOTH):
-        ctx = Context()
-        trail = Trail()
-        if match(alpha, ctx, t, trail):
-            contractum = apply_demod(beta, ctx)
-            trail.undo()
-            # For oriented: always valid
-            if dtype == DemodType.ORIENTED:
-                return contractum
-            # For lex-dependent: check t > contractum
-            if term_greater(t, contractum, lex_order_vars, symbol_table):
-                return contractum
-        else:
-            trail.undo()
+    ctx = Context()
+    trail = Trail()
+    if match(alpha, ctx, t, trail):
+        contractum = apply_demod(beta, ctx)
+        trail.undo()
+        if dtype == DemodType.ORIENTED:
+            return contractum
+        if term_greater(t, contractum, lex_order_vars, symbol_table):
+            return contractum
+    else:
+        trail.undo()
+    return None
 
-    # Try right-to-left: match beta against t, replace with alpha
-    if dtype in (DemodType.LEX_DEP_RL, DemodType.LEX_DEP_BOTH):
-        ctx = Context()
-        trail = Trail()
-        if match(beta, ctx, t, trail):
-            contractum = apply_demod(alpha, ctx)
-            trail.undo()
-            if term_greater(t, contractum, lex_order_vars, symbol_table):
-                return contractum
-        else:
-            trail.undo()
 
+def _try_demod_rhs(
+    t: Term,
+    clause: Clause,
+    dtype: DemodType,
+    symbol_table: SymbolTable,
+    lex_order_vars: bool,
+) -> Term | None:
+    """Try right-to-left rewrite: match beta against t, replace with alpha."""
+    if dtype not in (DemodType.LEX_DEP_RL, DemodType.LEX_DEP_BOTH):
+        return None
+
+    atom = clause.literals[0].atom
+    alpha = atom.args[0]
+    beta = atom.args[1]
+
+    ctx = Context()
+    trail = Trail()
+    if match(beta, ctx, t, trail):
+        contractum = apply_demod(alpha, ctx)
+        trail.undo()
+        if term_greater(t, contractum, lex_order_vars, symbol_table):
+            return contractum
+    else:
+        trail.undo()
     return None
 
 
@@ -272,38 +337,44 @@ def _demod_term_recursive(
         if changed:
             t = Term(private_symbol=t.private_symbol, arity=t.arity, args=tuple(new_args))
 
-    # Now try to rewrite at the current node
+    # Now try to rewrite at the current node using indexed lookup
     if not t.is_variable:
         rewritten = True
         while rewritten and remaining_steps > 0:
             rewritten = False
-            for clause, dtype in demod_index:
-                result = _try_demod(t, clause, dtype, symbol_table, lex_order_vars)
-                if result is not None:
-                    # Determine direction for justification
-                    direction = 1  # default: left-to-right
-                    atom = clause.literals[0].atom
-                    # If we matched beta (right side), direction is 2
-                    if dtype in (DemodType.LEX_DEP_RL,):
-                        direction = 2
-                    elif dtype == DemodType.LEX_DEP_BOTH:
-                        # Check which side matched by trying match again
-                        ctx_test = Context()
-                        trail_test = Trail()
-                        if not match(atom.args[0], ctx_test, t, trail_test):
-                            direction = 2
-                        trail_test.undo()
 
+            # Try LHS candidates (left-to-right matching)
+            for clause, dtype in demod_index.find_lhs_candidates(t):
+                result = _try_demod_lhs(t, clause, dtype, symbol_table, lex_order_vars)
+                if result is not None:
+                    direction = 1
                     steps.append((clause.id, 0, direction))
                     remaining_steps -= 1
                     t = result
                     rewritten = True
-                    # After rewriting, recursively demodulate subterms of result
                     t = _demod_term_recursive(
                         t, demod_index, symbol_table, lex_order_vars,
                         steps, remaining_steps,
                     )
-                    break  # restart search from first demodulator
+                    break
+
+            if rewritten:
+                continue
+
+            # Try RHS candidates (right-to-left matching)
+            for clause, dtype in demod_index.find_rhs_candidates(t):
+                result = _try_demod_rhs(t, clause, dtype, symbol_table, lex_order_vars)
+                if result is not None:
+                    direction = 2
+                    steps.append((clause.id, 0, direction))
+                    remaining_steps -= 1
+                    t = result
+                    rewritten = True
+                    t = _demod_term_recursive(
+                        t, demod_index, symbol_table, lex_order_vars,
+                        steps, remaining_steps,
+                    )
+                    break
 
     return t
 

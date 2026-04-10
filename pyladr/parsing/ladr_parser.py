@@ -212,8 +212,32 @@ class LADRParser:
                 i += 1
                 continue
 
-            # Check for set/clear/assign — skip for now (options processing)
-            if stmt.startswith(("set(", "clear(", "assign(")):
+            # Parse set/clear/assign directives
+            if stmt.startswith("set(") and stmt.endswith(")"):
+                flag_name = stmt[4:-1].strip()
+                if flag_name:
+                    result.flags[flag_name] = True
+                i += 1
+                continue
+            if stmt.startswith("clear(") and stmt.endswith(")"):
+                flag_name = stmt[6:-1].strip()
+                if flag_name:
+                    result.flags[flag_name] = False
+                i += 1
+                continue
+            if stmt.startswith("assign(") and stmt.endswith(")"):
+                inner = stmt[7:-1].strip()
+                parts = inner.split(",", 1)
+                if len(parts) == 2:
+                    name = parts[0].strip()
+                    try:
+                        val: int | float = int(parts[1].strip())
+                    except ValueError:
+                        try:
+                            val = float(parts[1].strip())
+                        except ValueError:
+                            val = 0
+                    result.assigns[name] = val
                 i += 1
                 continue
 
@@ -571,6 +595,8 @@ class ParsedInput:
     usable: list[Clause] = None  # type: ignore[assignment]
     hints: list[Clause] = None  # type: ignore[assignment]
     demodulators: list[Clause] = None  # type: ignore[assignment]
+    flags: dict[str, bool] = None  # type: ignore[assignment]
+    assigns: dict[str, int | float] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.sos is None:
@@ -583,6 +609,10 @@ class ParsedInput:
             self.hints = []
         if self.demodulators is None:
             self.demodulators = []
+        if self.flags is None:
+            self.flags = {}
+        if self.assigns is None:
+            self.assigns = {}
 
     @property
     def all_clauses(self) -> list[Clause]:

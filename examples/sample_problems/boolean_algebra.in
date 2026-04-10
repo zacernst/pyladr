@@ -1,0 +1,17 @@
+% Boolean algebra - prove De Morgan's law
+formulas(assumptions).
+  % Boolean algebra axioms
+  x + (y + z) = (x + y) + z.     % Addition associative
+  x * (y * z) = (x * y) * z.     % Multiplication associative
+  x + y = y + x.                 % Addition commutative
+  x * y = y * x.                 % Multiplication commutative
+  x + (x * y) = x.               % Absorption
+  x * (x + y) = x.               % Absorption
+  x + (-x) = 1.                  % Complement
+  x * (-x) = 0.                  % Complement
+end_of_list.
+
+formulas(goals).
+  % Prove De Morgan's law: -(x + y) = -x * -y
+  -(x + y) = (-x) * (-y).
+end_of_list.

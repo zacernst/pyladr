@@ -1,0 +1,17 @@
+% Prove Huntington's 4th axiom from the other three
+% This is a challenging problem where ML guidance can find novel proof paths
+
+formulas(assumptions).
+  % Huntington's Boolean algebra axioms H1, H2, H3
+  x + y = y + x.                    % H1: Commutativity of +
+  (x + y) + z = x + (y + z).        % H2: Associativity of +
+  n(n(x) + y) + n(n(x) + n(y)) = x. % H3: Huntington's axiom
+
+  % Standard Boolean definitions
+  x * y = n(n(x) + n(y)).           % Define * via De Morgan
+  -x = n(x).                        % Negation notation
+end_of_list.
+
+formulas(goals).
+  x + (y * z) = (x + y) * (x + z).  % H4: Distributivity (to be proved)
+end_of_list.

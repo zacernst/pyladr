@@ -1,0 +1,16 @@
+% Condensed detachment: propositional logic benchmark
+% Tests resolution-heavy search with deep proof trees
+% Exercises inference generation throughput
+
+assign(max_seconds, 30).
+
+formulas(sos).
+  -P(i(x,y)) | -P(x) | P(y).
+  P(i(x,i(y,x))).
+  P(i(i(x,i(y,z)),i(i(x,y),i(x,z)))).
+  P(i(i(-x,-y),i(y,x))).
+end_of_list.
+
+formulas(goals).
+  P(i(x,x)).
+end_of_list.

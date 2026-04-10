@@ -114,6 +114,47 @@ C_BASELINES: dict[str, CBaseline] = {
         user_cpu_seconds=0.00,
         megabytes=0.0,
     ),
+    # ── Expanded benchmarks (diverse bottleneck patterns) ──
+    "bench_group_inverse": CBaseline(
+        problem="bench_group_inverse",
+        theorem_proved=True,
+        clauses_given=0,  # To be filled by running C binary
+        clauses_generated=0,
+        clauses_kept=0,
+        proof_length=0,
+        user_cpu_seconds=0.00,
+        megabytes=0.0,
+    ),
+    "bench_lattice_idempotent": CBaseline(
+        problem="bench_lattice_idempotent",
+        theorem_proved=True,
+        clauses_given=0,
+        clauses_generated=0,
+        clauses_kept=0,
+        proof_length=0,
+        user_cpu_seconds=0.00,
+        megabytes=0.0,
+    ),
+    "bench_ba_orthocomplement": CBaseline(
+        problem="bench_ba_orthocomplement",
+        theorem_proved=True,
+        clauses_given=0,
+        clauses_generated=0,
+        clauses_kept=0,
+        proof_length=0,
+        user_cpu_seconds=0.00,
+        megabytes=0.0,
+    ),
+    "bench_cd_propositional": CBaseline(
+        problem="bench_cd_propositional",
+        theorem_proved=True,
+        clauses_given=0,
+        clauses_generated=0,
+        clauses_kept=0,
+        proof_length=0,
+        user_cpu_seconds=0.00,
+        megabytes=0.0,
+    ),
 }
 
 

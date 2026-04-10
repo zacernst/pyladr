@@ -1,0 +1,21 @@
+% Existential goal test - THIS EXPOSES THE BUG
+% Goal: exists x (x * x = x)
+% This means: ∃x (x*x = x)
+% Negation: ∀x (x*x ≠ x)
+% Clausification: x*x != x  (x stays as universally quantified variable)
+%
+% BUG: PyLADR wraps this in $quantified() instead of properly clausifying
+%
+% This is the Robbins-style idempotent element test
+
+formulas(sos).
+  x * e = x.
+  e * x = x.
+  x * x' = e.
+  x' * x = e.
+  (x * y) * z = x * (y * z).
+end_of_list.
+
+formulas(goals).
+  exists x (x * x = x).
+end_of_list.

@@ -1,0 +1,21 @@
+% Test input designed to trigger forward subsumption events.
+%
+% P(x) in usable is a general clause. When the search derives
+% specific instances like P(a), P(b), etc., these will be
+% forward-subsumed by P(x) before they can be kept.
+
+formulas(usable).
+  P(x).
+end_of_list.
+
+formulas(sos).
+  Q(a) -> P(a).
+  Q(b) -> P(b).
+  Q(a).
+  Q(b).
+  -R(a).
+end_of_list.
+
+formulas(goals).
+  R(a).
+end_of_list.

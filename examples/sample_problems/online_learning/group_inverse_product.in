@@ -1,0 +1,21 @@
+% Group theory: prove that the inverse of a product is the reverse product
+% of inverses.  i(x * y) = i(y) * i(x)
+%
+% An easy equational problem, good as a quick smoke test for the online
+% learning pipeline. Typically proved in ~20 given clauses, so online
+% learning has just enough runway to begin adapting.
+%
+% Usage:
+%   python3 -m pyladr.apps.prover9 --online-learning -f group_inverse_product.in
+
+formulas(assumptions).
+  e * x = x.
+  x * e = x.
+  i(x) * x = e.
+  x * i(x) = e.
+  (x * y) * z = x * (y * z).
+end_of_list.
+
+formulas(goals).
+  i(a * b) = i(b) * i(a).
+end_of_list.

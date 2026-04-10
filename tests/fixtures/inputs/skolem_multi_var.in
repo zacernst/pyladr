@@ -1,0 +1,15 @@
+% Multi-variable Skolemization test
+% Goal Q(x,y) is implicitly ∀x∀y Q(x,y)
+% Negation: ∃x∃y ¬Q(x,y)
+% Skolemization: ¬Q(c1,c2) with distinct Skolem constants
+%
+% Expected: denied goal is -Q(c1,c2) with c1 != c2
+
+formulas(sos).
+  Q(a, b).
+  Q(b, a).
+end_of_list.
+
+formulas(goals).
+  Q(x, y).
+end_of_list.

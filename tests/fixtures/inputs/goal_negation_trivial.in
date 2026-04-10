@@ -1,0 +1,13 @@
+% Regression test: goal with variables should NOT produce trivial proof.
+%
+% Bug: _deny_goals() only flips literal signs, doesn't Skolemize.
+% Result: denied goal -P(x) matches P(a) trivially via x->a.
+% Expected: denied goal -P(c1) does NOT match P(a) since c1 != a.
+
+formulas(sos).
+  P(a).
+end_of_list.
+
+formulas(goals).
+  P(x).
+end_of_list.

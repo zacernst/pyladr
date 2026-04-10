@@ -15,31 +15,26 @@ unify/match logic accounts for this consistently.
 
 from __future__ import annotations
 
-import threading
+import itertools
 from dataclasses import dataclass
 
 from pyladr.core.term import MAX_VARS, Term, copy_term, get_rigid_term, get_variable_term
 
 
 # ── Global multiplier counter (C static int Next_multiplier) ──────────────────
+# Use itertools.count() for lock-free atomic incrementing (GIL-safe).
 
-_next_multiplier = 0
-_multiplier_lock = threading.Lock()
+_multiplier_counter = itertools.count()
 
 
 def _get_next_multiplier() -> int:
-    global _next_multiplier
-    with _multiplier_lock:
-        m = _next_multiplier
-        _next_multiplier += 1
-        return m
+    return next(_multiplier_counter)
 
 
 def reset_multiplier() -> None:
     """Reset the multiplier counter (for testing)."""
-    global _next_multiplier
-    with _multiplier_lock:
-        _next_multiplier = 0
+    global _multiplier_counter
+    _multiplier_counter = itertools.count()
 
 
 # ── Trail entry ───────────────────────────────────────────────────────────────
@@ -58,6 +53,9 @@ class TrailEntry:
 
 # ── Context ───────────────────────────────────────────────────────────────────
 
+# Pre-built template for fast Context initialization.
+_NONE_TEMPLATE = [None] * MAX_VARS
+
 
 class Context:
     """Variable binding context matching C struct context.
@@ -72,8 +70,8 @@ class Context:
     __slots__ = ("terms", "contexts", "multiplier")
 
     def __init__(self) -> None:
-        self.terms: list[Term | None] = [None] * MAX_VARS
-        self.contexts: list[Context | None] = [None] * MAX_VARS
+        self.terms: list[Term | None] = _NONE_TEMPLATE[:]
+        self.contexts: list[Context | None] = _NONE_TEMPLATE[:]
         self.multiplier: int = _get_next_multiplier()
 
     def is_bound(self, varnum: int) -> bool:
@@ -178,13 +176,12 @@ def dereference(t: Term, c: Context | None) -> tuple[Term, Context | None]:
 
     Returns (final_term, final_context).
     """
-    while c is not None and t.is_variable:
-        vn = t.varnum
+    # Inline t.is_variable as (t.private_symbol >= 0) to avoid property overhead
+    while c is not None and t.private_symbol >= 0:
+        vn = t.private_symbol  # == t.varnum for variables
         if vn >= MAX_VARS or c.terms[vn] is None:
             break
-        bound_term = c.terms[vn]
-        assert bound_term is not None  # for type checker
-        t = bound_term
+        t = c.terms[vn]
         c = c.contexts[vn]
     return t, c
 
@@ -204,17 +201,18 @@ def apply_substitution(t: Term, c: Context | None) -> Term:
         new_varnum = c->multiplier * MAX_VARS + VARNUM(t)
     """
     t, c = dereference(t, c)
-    if t.is_variable:
+    ps = t.private_symbol
+    if ps >= 0:  # is_variable
         if c is None:
-            return get_variable_term(t.varnum)
-        return get_variable_term(c.multiplier * MAX_VARS + t.varnum)
+            return get_variable_term(ps)
+        return get_variable_term(c.multiplier * MAX_VARS + ps)
 
-    if t.is_constant:
-        return Term(private_symbol=t.private_symbol)
+    if t.arity == 0:  # is_constant
+        return Term(private_symbol=ps)
 
     # Complex term — recursively apply to arguments
     new_args = tuple(apply_substitution(a, c) for a in t.args)
-    return Term(private_symbol=t.private_symbol, arity=t.arity, args=new_args)
+    return Term(private_symbol=ps, arity=t.arity, args=new_args)
 
 
 def apply_substitute(
@@ -235,7 +233,7 @@ def apply_substitute(
     """
     if t is into_term:
         return apply_substitution(beta, c_from)
-    if t.is_variable:
+    if t.private_symbol >= 0:  # is_variable
         return apply_substitution(t, c_into)
     new_args = tuple(
         apply_substitute(a, beta, c_from, into_term, c_into) for a in t.args
@@ -258,7 +256,7 @@ def apply_substitute_at_pos(
     """
     if len(into_pos) == 0:
         return apply_substitution(beta, c_from)
-    if t.is_variable:
+    if t.private_symbol >= 0:  # is_variable
         return apply_substitution(t, c_into)
     arg_pos = into_pos[0] - 1  # Position vectors count from 1 in C
     new_args = tuple(
@@ -279,15 +277,16 @@ def apply_demod(t: Term, c: Context) -> Term:
     Note: The C version sets a term flag on results; we skip that since
     our terms are immutable. The caller can track demod status externally.
     """
-    if t.is_variable:
-        bound = c.terms[t.varnum]
+    ps = t.private_symbol
+    if ps >= 0:  # is_variable; ps == varnum
+        bound = c.terms[ps]
         if bound is None:
-            raise ValueError(f"Variable v{t.varnum} not instantiated in demod context")
+            raise ValueError(f"Variable v{ps} not instantiated in demod context")
         return copy_term(bound)
-    if t.is_constant:
-        return Term(private_symbol=t.private_symbol)
+    if t.arity == 0:  # is_constant
+        return Term(private_symbol=ps)
     new_args = tuple(apply_demod(a, c) for a in t.args)
-    return Term(private_symbol=t.private_symbol, arity=t.arity, args=new_args)
+    return Term(private_symbol=ps, arity=t.arity, args=new_args)
 
 
 # ── Occur check ───────────────────────────────────────────────────────────────
@@ -302,8 +301,8 @@ def occur_check(varnum: int, var_ctx: Context, t: Term, t_ctx: Context | None) -
     FALSE when variable occurs). Our unify/match handle this consistently.
     """
     t, t_ctx = dereference(t, t_ctx)
-    if t.is_variable:
-        return t.varnum == varnum and t_ctx is var_ctx
+    if t.private_symbol >= 0:  # is_variable
+        return t.private_symbol == varnum and t_ctx is var_ctx
     return any(occur_check(varnum, var_ctx, a, t_ctx) for a in t.args)
 
 
@@ -331,11 +330,13 @@ def unify(
     t2, c2_deref = dereference(t2, c2)
     c2 = c2_deref if c2_deref is not None else c2
 
-    if t1.is_variable:
-        vn1 = t1.varnum
-        if t2.is_variable and vn1 == t2.varnum and c1 is c2:
+    ps1 = t1.private_symbol
+    if ps1 >= 0:  # t1 is_variable
+        vn1 = ps1
+        ps2 = t2.private_symbol
+        if ps2 >= 0 and vn1 == ps2 and c1 is c2:
             return True  # Same variable in same context
-        if t2.is_variable:
+        if ps2 >= 0:  # t2 is_variable
             # Both variables, different — no occur check needed (C behavior)
             trail.bind(vn1, c1, t2, c2)
             return True
@@ -345,8 +346,8 @@ def unify(
         trail.bind(vn1, c1, t2, c2)
         return True
 
-    if t2.is_variable:
-        vn2 = t2.varnum
+    if t2.private_symbol >= 0:  # t2 is_variable
+        vn2 = t2.private_symbol
         if occur_check(vn2, c2, t1, c1):
             return False
         trail.bind(vn2, c2, t1, c1)
@@ -387,8 +388,9 @@ def match(
     pattern, p_ctx_deref = dereference(pattern, p_ctx)
     p_ctx = p_ctx_deref if p_ctx_deref is not None else p_ctx
 
-    if pattern.is_variable:
-        vn = pattern.varnum
+    p_ps = pattern.private_symbol
+    if p_ps >= 0:  # pattern is_variable
+        vn = p_ps  # == varnum
         if p_ctx.terms[vn] is None:
             # Unbound — bind and succeed
             trail.bind(vn, p_ctx, target, None)
@@ -396,17 +398,21 @@ def match(
         # Already bound — check consistency (C: term_ident(c1->terms[vn], t2))
         return p_ctx.terms[vn].term_ident(target)
 
-    if target.is_variable:
+    if target.private_symbol >= 0:  # target is_variable
         return False  # Can't match rigid pattern against variable target
 
-    if pattern.private_symbol != target.private_symbol:
+    if p_ps != target.private_symbol:
         return False
     if pattern.arity != target.arity:
         return False
 
-    return all(
-        match(a1, p_ctx, a2, trail) for a1, a2 in zip(pattern.args, target.args, strict=True)
-    )
+    # Unrolled loop instead of all(genexpr) to avoid generator overhead
+    p_args = pattern.args
+    t_args = target.args
+    for i in range(len(p_args)):
+        if not match(p_args[i], p_ctx, t_args[i], trail):
+            return False
+    return True
 
 
 # ── Variant checking ─────────────────────────────────────────────────────────
@@ -462,8 +468,9 @@ def subst_changes_term(t: Term, c: Context) -> bool:
 
     Returns True if at least one variable in t is bound in c.
     """
-    if t.is_variable:
-        return c.terms[t.varnum] is not None
+    ps = t.private_symbol
+    if ps >= 0:  # is_variable
+        return c.terms[ps] is not None
     return any(subst_changes_term(a, c) for a in t.args)
 
 

@@ -8,6 +8,7 @@ a format matching the original C Prover9 output.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -184,6 +185,42 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 # ── Goal denial (negation for refutation) ─────────────────────────────────
 
 
+def _collect_variables(t) -> set[int]:
+    """Collect all variable numbers in a term.
+
+    Recursively traverses the term tree and returns the set of
+    variable numbers (varnum values) found.
+    """
+    if t.is_variable:
+        return {t.varnum}
+    result: set[int] = set()
+    for arg in t.args:
+        result |= _collect_variables(arg)
+    return result
+
+
+def _skolemize_term(t, var_to_skolem: dict[int, 'Term']) -> 'Term':
+    """Replace variables in a term with Skolem constants.
+
+    Args:
+        t: The term to Skolemize.
+        var_to_skolem: Mapping from variable number to Skolem constant Term.
+
+    Returns:
+        New term with variables replaced by Skolem constants.
+    """
+    from pyladr.core.term import Term
+
+    if t.is_variable:
+        return var_to_skolem.get(t.varnum, t)
+    if t.arity == 0:
+        return t
+    new_args = tuple(_skolemize_term(arg, var_to_skolem) for arg in t.args)
+    if new_args == t.args:
+        return t
+    return Term(private_symbol=t.private_symbol, arity=t.arity, args=new_args)
+
+
 def _deny_goals(
     parsed: ParsedInput,
     symbol_table: SymbolTable,
@@ -191,15 +228,44 @@ def _deny_goals(
     """Negate goals and add them to SOS for refutation-based proving.
 
     Returns (usable_clauses, sos_clauses) ready for the search engine.
-    Goals are negated: each literal's sign is flipped. The negated goals
-    are appended to the SOS list.
+
+    Matches C Prover9 semantics:
+    - Goal: ∀x₁...∀xₙ φ(x₁,...,xₙ)
+    - Negate: ∃x₁...∃xₙ ¬φ(x₁,...,xₙ)
+    - Skolemize: ¬φ(c₁,...,cₙ) where cᵢ are fresh Skolem constants
+
+    Each literal's sign is flipped, and all universally-quantified
+    variables are replaced with fresh Skolem constants.
     """
+    from pyladr.core.term import Term, get_rigid_term
+
     usable = list(parsed.usable)
     sos = list(parsed.sos)
 
+    skolem_counter = 1
+
     for i, goal in enumerate(parsed.goals):
+        # Collect all variables across all literals of this goal
+        all_vars: set[int] = set()
+        for lit in goal.literals:
+            all_vars |= _collect_variables(lit.atom)
+
+        # Create Skolem constants for each variable
+        var_to_skolem: dict[int, Term] = {}
+        for varnum in sorted(all_vars):
+            name = f"c{skolem_counter}"
+            skolem_counter += 1
+            sn = symbol_table.str_to_sn(name, 0)
+            symbol_table.mark_skolem(sn)
+            var_to_skolem[varnum] = get_rigid_term(sn, 0)
+
+        # Negate literals and Skolemize
         denied_lits = tuple(
-            Literal(sign=not lit.sign, atom=lit.atom) for lit in goal.literals
+            Literal(
+                sign=not lit.sign,
+                atom=_skolemize_term(lit.atom, var_to_skolem),
+            )
+            for lit in goal.literals
         )
         denied = Clause(
             literals=denied_lits,
@@ -221,21 +287,40 @@ def _auto_inference(
 
     Matches C Prover9 auto_inference behavior:
     - If there are equality literals, enable paramodulation and demodulation
+    - If set(auto) and clauses have negative literals, enable hyper-resolution
+      (C: auto_inference() in auto.c enables hyper_res for Horn-like problems)
     """
     has_equality = False
+    has_neg_lits = False
     for clause in parsed.sos + parsed.goals + parsed.usable:
         for lit in clause.literals:
             if lit.atom.arity == 2:
-                # Check if it's an equality atom by looking at symbol
-                # Equalities use the = symbol which has a known symnum
                 has_equality = True
-                break
-        if has_equality:
+            if not lit.sign:
+                has_neg_lits = True
+        if has_equality and has_neg_lits:
             break
 
     if has_equality:
         opts.paramodulation = True
         opts.demodulation = True
+
+    # C Prover9 auto mode
+    if parsed.flags.get("auto", False):
+        # Enable hyper-resolution when input has clauses with negative
+        # literals (suitable nuclei for hyper-resolution).
+        # C auto_inference() (auto.c) sets hyper_resolution AND clears
+        # binary_resolution when the HNE pattern is detected.
+        if has_neg_lits:
+            opts.hyper_resolution = True
+            opts.binary_resolution = False
+
+        # Auto limits (C: set(auto) -> set(auto_limits))
+        # Apply default auto limits only if not explicitly overridden
+        if opts.max_weight < 0:
+            opts.max_weight = 100.0
+        if opts.sos_limit < 0:
+            opts.sos_limit = 20000
 
 
 # ── Output formatting ─────────────────────────────────────────────────────
@@ -433,6 +518,33 @@ def run_prover(argv: list[str] | None = None) -> int:
 
     out: TextIO = sys.stdout
 
+    # ── Configure logging for given clause output ───────────────────────
+
+    # Create a custom handler that writes to stdout
+    class StdoutHandler(logging.StreamHandler):
+        def __init__(self):
+            super().__init__(sys.stdout)
+
+        def format(self, record):
+            # Format given clause messages to match C Prover9 format
+            if record.name == 'pyladr.search.given_clause':
+                return record.getMessage()
+            return super().format(record)
+
+    # Configure logger for given clause search
+    logger = logging.getLogger('pyladr.search.given_clause')
+    logger.setLevel(logging.INFO)
+
+    # Remove any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # Add our custom handler
+    handler = StdoutHandler()
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    logger.propagate = False
+
     # ── Read input ──────────────────────────────────────────────────────
 
     input_file: str | None = args.input_file
@@ -490,7 +602,28 @@ def run_prover(argv: list[str] | None = None) -> int:
         quiet=args.quiet,
     )
 
+    # Apply parsed assign() directives (LADR input overrides CLI defaults)
+    if "max_proofs" in parsed.assigns:
+        opts.max_proofs = int(parsed.assigns["max_proofs"])
+    if "max_given" in parsed.assigns:
+        opts.max_given = int(parsed.assigns["max_given"])
+    if "max_kept" in parsed.assigns:
+        opts.max_kept = int(parsed.assigns["max_kept"])
+    if "max_seconds" in parsed.assigns:
+        opts.max_seconds = float(parsed.assigns["max_seconds"])
+    if "max_generated" in parsed.assigns:
+        opts.max_generated = int(parsed.assigns["max_generated"])
+    if "max_weight" in parsed.assigns:
+        opts.max_weight = float(parsed.assigns["max_weight"])
+    if "sos_limit" in parsed.assigns:
+        opts.sos_limit = int(parsed.assigns["sos_limit"])
+
+    # Apply parsed set()/clear() flags
+    if parsed.flags.get("print_given", False):
+        opts.print_given = True
+
     # Auto-detect inference settings based on input
+    # (auto_limits apply defaults only when not explicitly overridden)
     _auto_inference(parsed, opts)
 
     # ── Print initial clauses ───────────────────────────────────────────

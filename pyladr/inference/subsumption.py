@@ -135,9 +135,21 @@ def subsumes(c: Clause, d: Clause) -> bool:
 
     # Non-unit subsumption: full recursive check
     _nonunit_subsumption_tests += 1
+
+    # Heuristic: reorder c's literals so the most restrictive (fewest
+    # matching candidates in d by sign) come first.  This prunes the
+    # backtracking search tree from the top.
+    clits = c.literals
+    if nc >= 3:
+        d_lits = d.literals
+        pos_count = sum(1 for dl in d_lits if dl.sign)
+        neg_count = nd - pos_count
+        # Sort by number of same-sign literals in d (ascending = most restrictive first)
+        clits = tuple(sorted(clits, key=lambda l: pos_count if l.sign else neg_count))
+
     subst = Context()
     trail = Trail()
-    result = _subsume_literals(c.literals, 0, subst, d, trail)
+    result = _subsume_literals(clits, 0, subst, d, trail)
     if result:
         trail.undo()
     return result
@@ -166,17 +178,15 @@ def forward_subsume(d: Clause, pos_idx, neg_idx) -> Clause | None:
 
     for dlit in d.literals:
         # Retrieve generalizations of dlit from the appropriate index
+        # Mindex.retrieve_generalizations returns stored objects directly.
+        # DiscrimWild is an imperfect filter — verify with subsumes().
         idx = pos_idx if dlit.sign else neg_idx
-        for catom, data in idx.retrieve_generalizations(dlit.atom):
+        for data in idx.retrieve_generalizations(dlit.atom):
             c, c_first_lit = data
             # Only consider candidates indexed on their first literal
             if c.literals[0] is not c_first_lit:
                 continue
             nc = c.num_literals
-            # Unit subsumption: first literal matched → c subsumes d
-            if nc == 1:
-                return c
-            # Non-unit: full subsumption check (c cannot subsume shorter d)
             if nc <= nd and subsumes(c, d):
                 return c
 
@@ -285,5 +295,137 @@ def back_subsume_from_lists(
             nd = d.num_literals
             if nc <= nd and subsumes(c, d):
                 subsumees.append(d)
+
+    return subsumees
+
+
+# ── Predicate-sign index for back subsumption ────────────────────────────────
+
+
+def _clause_pred_signs(c: Clause) -> set[tuple[int, bool]]:
+    """Extract (predicate_symnum, sign) set from a clause's literals."""
+    result: set[tuple[int, bool]] = set()
+    for lit in c.literals:
+        atom = lit.atom
+        # Use symnum for rigid atoms, -1 for variable atoms
+        ps = -atom.private_symbol if atom.private_symbol < 0 else -1
+        result.add((ps, lit.sign))
+    return result
+
+
+class BackSubsumptionIndex:
+    """Hash-based index for fast back subsumption candidate retrieval.
+
+    Indexes clauses by (predicate_symnum, sign) of each literal.
+    For back subsumption, finds candidate victims by intersecting
+    the predicate-sign sets of the subsumer's literals.
+
+    This replaces linear scanning of clause lists with O(1) hash lookups
+    plus set intersection, dramatically reducing subsumes() calls.
+    """
+
+    __slots__ = ("_by_pred_sign", "_clauses", "_pred_signs_cache")
+
+    def __init__(self) -> None:
+        # Map: (symnum, sign) -> set of clause IDs
+        self._by_pred_sign: dict[tuple[int, bool], set[int]] = {}
+        # Map: clause ID -> Clause
+        self._clauses: dict[int, Clause] = {}
+        # Cache: clause ID -> set of (symnum, sign) for deindex
+        self._pred_signs_cache: dict[int, set[tuple[int, bool]]] = {}
+
+    def insert(self, c: Clause) -> None:
+        """Add a clause to the back subsumption index."""
+        cid = c.id
+        self._clauses[cid] = c
+        ps_set = _clause_pred_signs(c)
+        self._pred_signs_cache[cid] = ps_set
+        for key in ps_set:
+            bucket = self._by_pred_sign.get(key)
+            if bucket is None:
+                bucket = set()
+                self._by_pred_sign[key] = bucket
+            bucket.add(cid)
+
+    def remove(self, c: Clause) -> None:
+        """Remove a clause from the back subsumption index."""
+        cid = c.id
+        self._clauses.pop(cid, None)
+        ps_set = self._pred_signs_cache.pop(cid, None)
+        if ps_set is None:
+            return
+        for key in ps_set:
+            bucket = self._by_pred_sign.get(key)
+            if bucket is not None:
+                bucket.discard(cid)
+
+    def candidates(self, c: Clause) -> list[Clause]:
+        """Find clauses that could potentially be subsumed by c.
+
+        Returns clauses whose literals' (predicate, sign) pairs are a
+        superset of c's. This is a necessary condition for c to subsume d:
+        every literal of c must match some literal of d with the same
+        predicate symbol and sign.
+        """
+        nc = c.num_literals
+        if nc == 0:
+            return []
+
+        ps_set = _clause_pred_signs(c)
+
+        # Find intersection of all buckets
+        sets: list[set[int]] = []
+        for key in ps_set:
+            bucket = self._by_pred_sign.get(key)
+            if bucket is None:
+                return []  # No clause has this (pred, sign) → c can't subsume anything
+            sets.append(bucket)
+
+        # Intersect: start with smallest set for efficiency
+        sets.sort(key=len)
+        result_ids = sets[0].copy()
+        for s in sets[1:]:
+            result_ids &= s
+            if not result_ids:
+                return []
+
+        # Filter: c cannot subsume itself, and nc <= nd required
+        cid = c.id
+        candidates = []
+        for did in result_ids:
+            if did == cid:
+                continue
+            d = self._clauses.get(did)
+            if d is not None and nc <= d.num_literals:
+                candidates.append(d)
+        return candidates
+
+
+def back_subsume_indexed(
+    c: Clause,
+    back_idx: BackSubsumptionIndex,
+) -> list[Clause]:
+    """Backward subsumption using predicate-sign index.
+
+    Finds candidates via hash-based lookup, then verifies with subsumes().
+    Much faster than linear scanning when there are many clauses.
+
+    Args:
+        c: The new clause (potential subsumer).
+        back_idx: Index of existing clauses.
+
+    Returns:
+        List of clauses subsumed by c.
+    """
+    nc = c.num_literals
+    if nc == 0:
+        return []
+
+    candidates = back_idx.candidates(c)
+    subsumees: list[Clause] = []
+
+    for d in candidates:
+        if subsumes(c, d):
+            subsumees.append(d)
 
     return subsumees

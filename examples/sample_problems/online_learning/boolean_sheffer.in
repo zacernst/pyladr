@@ -1,0 +1,22 @@
+% Boolean algebra from the Sheffer stroke (NAND).
+%
+% The Sheffer stroke s(x,y) = NAND(x,y) is a sole adequate connective for
+% Boolean algebra.  This problem derives idempotence of join from the
+% Sheffer stroke axioms — a classic hard equational benchmark.
+%
+% The search generates a combinatorial explosion of Sheffer-stroke terms.
+% Online learning helps by recognising which rewrite patterns are making
+% progress toward the goal term structure.
+%
+% Usage:
+%   python3 -m pyladr.apps.prover9 --online-learning -max_given 300 -f boolean_sheffer.in
+
+formulas(assumptions).
+  % Sheffer stroke axioms (McCune's single axiom basis)
+  s(s(x, s(x, x)), s(x, s(y, s(x, x)))) = x.
+end_of_list.
+
+formulas(goals).
+  % Derive: s(a, s(a, a)) is an involution (double negation elimination)
+  s(s(a, s(a, a)), s(s(a, s(a, a)), s(a, s(a, a)))) = a.
+end_of_list.

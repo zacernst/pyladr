@@ -1,0 +1,12 @@
+% Famous Robbins conjecture (solved by EQP in 1996)
+% Demonstrate embedding guidance finding alternative proof paths
+
+formulas(assumptions).
+  x + y = y + x.                    % Commutativity
+  (x + y) + z = x + (y + z).        % Associativity
+  n(n(x + y) + n(x + n(y))) = x.    % Robbins axiom
+end_of_list.
+
+formulas(goals).
+  exists x (x + x = x).             % Idempotent element exists
+end_of_list.

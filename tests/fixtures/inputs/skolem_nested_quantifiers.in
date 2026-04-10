@@ -1,0 +1,20 @@
+% Nested quantifier test - EXPOSES CLAUSIFICATION BUG
+% Goal: all x exists y (x * y = e)
+% This means: ∀x∃y (x*y = e)
+% Negation: ∃x∀y (x*y ≠ e)
+% Skolemization: ∀y (c1*y ≠ e)  -- c1 is Skolem constant for x
+% Clause: c1 * y != e  (y stays universally quantified)
+%
+% BUG: PyLADR doesn't handle the quantifier nesting at all
+
+formulas(sos).
+  x * e = x.
+  e * x = x.
+  x * x' = e.
+  x' * x = e.
+  (x * y) * z = x * (y * z).
+end_of_list.
+
+formulas(goals).
+  all x exists y (x * y = e).
+end_of_list.

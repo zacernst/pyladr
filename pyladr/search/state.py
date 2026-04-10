@@ -6,6 +6,7 @@ assignment, and index structures used during the given-clause search.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
@@ -20,11 +21,11 @@ class ClauseList:
     """An ordered list of clauses matching C struct clist.
 
     Named clause lists (usable, sos, limbo, disabled) hold clauses
-    at different stages of the search.
+    at different stages of the search. Uses deque for O(1) pop_first.
     """
 
     name: str
-    _clauses: list[Clause] = field(default_factory=list)
+    _clauses: deque[Clause] = field(default_factory=deque)
 
     @property
     def length(self) -> int:
@@ -57,7 +58,7 @@ class ClauseList:
     def pop_first(self) -> Clause | None:
         """Remove and return the first clause."""
         if self._clauses:
-            return self._clauses.pop(0)
+            return self._clauses.popleft()
         return None
 
     def __iter__(self):

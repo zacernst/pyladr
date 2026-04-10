@@ -1,0 +1,184 @@
+# PyLADR Performance Guide
+
+## Performance Characteristics
+
+### Typical Throughput
+
+PyLADR processes 1,000–10,000 inferences per second depending on problem characteristics:
+
+- **Simple resolution:** ~10,000 inferences/sec (small clauses, no equality)
+- **Equational reasoning:** ~3,000–5,000 inferences/sec (paramodulation + demodulation)
+- **AC unification:** ~1,000–2,000 inferences/sec (diophantine equation overhead)
+
+### Bottleneck Breakdown
+
+For a typical search with paramodulation:
+
+| Phase | % Time | Notes |
+|-------|--------|-------|
+| Inference generation | 40–50% | Resolution + paramodulation |
+| Subsumption checking | 20–30% | Forward + backward |
+| Demodulation | 10–15% | Term rewriting |
+| Indexing | 5–10% | Discrimination tree operations |
+| Selection + bookkeeping | 5–10% | Given clause selection, statistics |
+
+## Optimization Strategies
+
+### 1. Search Limits
+
+Always set search limits to avoid runaway searches:
+
+```bash
+uv run pyprover9 -f problem.in \
+    -max_given 1000 \
+    -max_seconds 60 \
+    -max_generated 50000
+```
+
+### 2. Enable Demodulation for Equational Problems
+
+Demodulation aggressively simplifies clauses, reducing the search space:
+
+```bash
+uv run pyprover9 -f problem.in --paramodulation --demodulation
+```
+
+Back demodulation (`--back-demod`) further reduces redundancy by re-simplifying existing clauses when new demodulators are discovered. This has overhead but pays off for heavily equational problems.
+
+### 3. Choose the Right Inference Rules
+
+- **Pure equational problems:** Use `--paramodulation --demodulation --no-resolution`
+- **Mixed logic + equality:** Use default resolution + `--paramodulation --demodulation`
+- **No equality:** Default resolution + factoring is usually sufficient
+
+### 4. Weight-Based Filtering
+
+Use `max_weight` to discard heavy (complex) clauses:
+
+```
+% In input file:
+set(max_weight, 30).
+```
+
+Lighter clauses are generally more useful. Aggressive weight limits reduce memory and speed up subsumption, but too aggressive risks discarding needed clauses.
+
+## Parallel Execution
+
+### Requirements
+
+- **Python 3.14+** with free-threading enabled (`--disable-gil` build)
+- Falls back to sequential on GIL Python (no overhead penalty)
+
+### How It Works
+
+The parallel engine splits the most expensive phase — inference generation — across multiple threads:
+
+```
+Sequential: select_given → move_to_usable → index
+Parallel:   generate_inferences(given, usable_chunks)
+Sequential: process each inference → limbo_process
+```
+
+Each thread processes a chunk of the usable set independently. Thread-local `Context`/`Trail` objects eliminate contention during unification.
+
+### Configuration
+
+```python
+from pyladr.parallel.inference_engine import ParallelSearchConfig
+from pyladr.search.given_clause import GivenClauseSearch, SearchOptions
+
+config = ParallelSearchConfig(
+    enabled=True,
+    max_workers=4,               # Thread count (None = cpu_count)
+    min_usable_for_parallel=50,  # Don't parallelize small sets
+    chunk_size=25,               # Usable clauses per work unit
+)
+
+options = SearchOptions(parallel=config)
+search = GivenClauseSearch(options=options)
+```
+
+### When Parallelism Helps
+
+- **Large usable sets** (100+ clauses) — parallelism amortizes overhead
+- **Complex inference rules** (paramodulation, AC unification) — more work per clause
+- **Problems with many given clauses** — cumulative speedup
+
+### When It Doesn't Help
+
+- **Small problems** (< 50 usable clauses) — overhead exceeds benefit
+- **GIL Python** — threads share the GIL, no true parallelism
+- **I/O bound** — parsing/output phases are inherently sequential
+
+### Expected Speedup
+
+Target: **2–4x** with 4 threads on problems with 100+ given clauses.
+
+Single-threaded overhead of the parallel infrastructure: ~5–10% (thread pool management, snapshot copies).
+
+## Indexing Performance
+
+### Discrimination Trees
+
+PyLADR uses discrimination trees for efficient term retrieval:
+
+- **`DiscrimWild` (WILD):** Fast imperfect filter. Returns supersets of matches — callers must verify. Best for resolution where false positives are cheap to filter.
+- **`DiscrimBind` (BIND):** Slower but exact. Produces substitutions directly. Better when unification is expensive (AC).
+
+The default (`WILD`) is appropriate for most problems.
+
+### Feature Vector Indexing
+
+`FeatureIndex` provides fast prefiltering for subsumption. It computes lightweight feature vectors (symbol counts, variable counts) and uses them to prune candidates before expensive subsumption checking.
+
+## Memory Considerations
+
+### Clause Lifecycle
+
+1. **Generated** — Created by inference rules
+2. **Kept** — Passes forward subsumption, tautology, weight checks
+3. **Usable** — Available for inference (indexed)
+4. **Deleted** — Removed by back subsumption or back demodulation
+
+Aggressive forward subsumption and weight limits keep memory bounded.
+
+### Term Sharing
+
+Terms are immutable (frozen dataclasses) and can be safely shared. Variable terms are cached via `get_variable_term()` to avoid allocation. The `clear_term_caches()` function can release cached terms if memory is a concern.
+
+## Benchmarking
+
+### Running Benchmarks
+
+```bash
+# Run performance benchmarks
+uv run pytest -m benchmark tests/benchmarks/
+
+# Compare against C baselines
+uv run pytest tests/benchmarks/test_performance.py -v
+```
+
+### Benchmark Infrastructure
+
+`tests/benchmarks/bench_harness.py` provides timing and comparison utilities. `tests/benchmarks/c_baselines.py` stores reference timing data from the C implementation.
+
+## Profiling
+
+### Python Profiling
+
+```bash
+# Profile a specific problem
+python -m cProfile -s cumulative -m pyladr.apps.prover9 -f problem.in
+
+# Line-level profiling (install line_profiler)
+kernprof -l -v pyladr/search/given_clause.py
+```
+
+### Key Functions to Profile
+
+- `GivenClauseSearch._make_inferences` — Main inference loop
+- `all_binary_resolvents` — Resolution generation
+- `para_from_into` — Paramodulation generation
+- `subsumes` — Subsumption checking
+- `demodulate_clause` — Demodulation
+- `unify` — Core unification

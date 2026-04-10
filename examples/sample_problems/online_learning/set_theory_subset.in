@@ -1,0 +1,22 @@
+% Set theory: prove transitivity of the subset relation.
+%
+% A first-order (non-equational) problem. Online learning adapts clause
+% selection based on which membership-chain patterns are productive —
+% useful when the search must build long derivation chains.
+%
+% Usage:
+%   python3 -m pyladr.apps.prover9 --online-learning -f set_theory_subset.in
+
+formulas(assumptions).
+  % Subset definition
+  subset(X, Y) -> (member(Z, X) -> member(Z, Y)).
+
+  % Given: A subset B, B subset C
+  subset(a, b).
+  subset(b, c).
+end_of_list.
+
+formulas(goals).
+  % Prove: A subset C (transitivity)
+  subset(a, c).
+end_of_list.
