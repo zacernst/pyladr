@@ -1,0 +1,53 @@
+set(auto).
+assign(max_proofs, 16).
+assign(max_weight, 240).
+assign(sos_limit, 1000000).
+
+formulas(sos).
+-P(x) | -P(i(x,y)) | P(y).
+P(i(x, i(i(i(x, y), i(z, y)), z))).  % XCB
+% P(i(x,i(i(y,z),i(i(z,x),y)))). %1%
+end_of_list.
+
+formulas(goals).
+P(i(x,x)).
+P(i(i(x,y),i(i(y,z),i(x,z)))).
+P(i(i(x,y),i(y,x))).
+P(i(i(i(x,i(y,z)),z),i(y,x))). %1%
+P(i(i(i(x,y),z),i(y,i(z,x)))). %1%
+P(i(x,i(i(y,i(x,z)),i(z,y)))). %1%
+P(i(i(x,i(y,z)),i(z,i(x,y)))). %1%
+P(i(x,i(i(y,z),i(i(x,z),y)))). %1%
+P(i(i(x,y),i(z,i(i(y,z),x)))). %1%
+P(i(i(x,y),i(z,i(i(z,y),x)))). %1%
+P(i(i(i(x,i(y,z)),y),i(z,x))). %1%
+P(i(x,i(i(y,z),i(i(x,z),y)))). %1%
+
+P(i(i(i(i(i(i(i(x,i(i(i(x,y),i(z,y)),z)),u),i(v,u)),v),w),i(v6,w)),v6)).
+P(i(i(i(i(x,i(i(i(x,y),i(z,y)),z)),u),i(v,u)),v)).
+P(i(i(i(i(x,i(i(i(x,y),i(z,y)),z)),u),v),i(u,v))).
+P(i(i(i(i(x,x),y),i(z,y)),z)).
+P(i(i(i(i(x,x),y),z),i(y,z))).
+P(i(i(i(i(x,y),i(z,y)),z),x)).
+P(i(i(i(i(x,y),z),i(y,z)),x)).
+P(i(i(i(x,i(i(i(x,y),i(z,y)),z)),i(i(u,v),i(i(w,v),u))),w)).
+P(i(i(i(x,i(i(i(x,y),i(z,y)),z)),u),i(i(v,v),u))).
+P(i(i(i(x,i(i(y,x),z)),i(i(u,v),i(w,i(i(v,w),u)))),i(z,y))).
+P(i(i(i(x,i(i(y,x),z)),i(u,i(i(i(u,v),i(w,v)),w))),i(z,y))).
+P(i(i(i(x,y),i(i(z,y),x)),z)).
+P(i(i(i(x,y),y),x)).
+P(i(i(x,i(i(y,x),z)),i(z,y))).
+P(i(i(x,i(x,y)),y)).
+P(i(i(x,i(y,x)),y)).
+P(i(i(x,i(y,y)),i(i(i(z,i(i(i(z,u),i(v,u)),v)),w),i(x,w)))).
+P(i(i(x,i(y,y)),x)).
+P(i(i(x,x),i(y,i(i(i(i(i(z,u),i(v,u)),v),y),z)))).
+P(i(i(x,y),i(i(i(z,i(i(i(z,u),i(v,u)),v)),y),x))).
+P(i(x,i(i(i(x,y),i(z,y)),z))).
+P(i(x,i(i(i(x,y),z),i(y,z)))).
+P(i(x,i(i(i(y,i(i(z,y),u)),x),i(u,z)))).
+P(i(x,i(i(y,x),i(i(i(z,i(i(i(z,u),i(v,u)),v)),w),i(y,w))))).
+P(i(x,i(i(y,z),i(i(x,z),y)))).
+P(i(x,x)).
+
+end_of_list.
