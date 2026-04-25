@@ -2,11 +2,11 @@ set(auto).
 
 formulas(sos).
 -P(x) | -P(i(x,y)) | P(y).
+P(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(w),v),y)),i(w,z))))).
+end_of_list.
+
+formulas(goals).
 P(i(i(x,y),i(i(y,z),i(x,z)))).
 P(i(i(n(x),x),x)).
 P(i(x,i(n(x),y))).
-% CORRECTED: Variable version as goal (not axiom!)
-% Original: -P(i(a,i(i(b,i(a,c)),i(i(n(c),i(i(n(d),e),b)),i(d,c)))))
-% Variables: a→x, b→y, c→z, d→w, e→v
--P(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(w),v),y)),i(w,z))))).
 end_of_list.

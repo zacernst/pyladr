@@ -21,11 +21,16 @@ class ClauseList:
     """An ordered list of clauses matching C struct clist.
 
     Named clause lists (usable, sos, limbo, disabled) hold clauses
-    at different stages of the search. Uses deque for O(1) pop_first.
+    at different stages of the search.
+
+    Uses an ordered dict (Python 3.7+ guarantees insertion order) for
+    O(1) append, O(1) remove, O(1) contains, and tombstone-free iteration.
+    This eliminates the per-element id() call during iteration that the
+    previous deque+tombstone approach required.
     """
 
     name: str
-    _clauses: deque[Clause] = field(default_factory=deque)
+    _clauses: dict[int, Clause] = field(default_factory=dict)  # clause.id -> clause, insertion-ordered
 
     @property
     def length(self) -> int:
@@ -37,32 +42,37 @@ class ClauseList:
 
     @property
     def first(self) -> Clause | None:
-        return self._clauses[0] if self._clauses else None
-
-    def append(self, c: Clause) -> None:
-        """Append a clause to the end (C clist_append)."""
-        self._clauses.append(c)
-
-    def remove(self, c: Clause) -> bool:
-        """Remove a clause by identity (C clist_remove)."""
-        try:
-            self._clauses.remove(c)
-            return True
-        except ValueError:
-            return False
-
-    def contains(self, c: Clause) -> bool:
-        """Check if clause is in this list (C clist_member)."""
-        return c in self._clauses
-
-    def pop_first(self) -> Clause | None:
-        """Remove and return the first clause."""
-        if self._clauses:
-            return self._clauses.popleft()
+        # Python dict preserves insertion order; first item is oldest
+        for c in self._clauses.values():
+            return c
         return None
 
+    def append(self, c: Clause) -> None:
+        """Append a clause to the end (C clist_append). O(1)."""
+        self._clauses[c.id] = c
+
+    def remove(self, c: Clause) -> bool:
+        """Remove a clause (C clist_remove). O(1)."""
+        if c.id not in self._clauses:
+            return False
+        del self._clauses[c.id]
+        return True
+
+    def contains(self, c: Clause) -> bool:
+        """Check if clause is in this list (C clist_member). O(1)."""
+        return c.id in self._clauses
+
+    def pop_first(self) -> Clause | None:
+        """Remove and return the first clause. O(1) amortized."""
+        if not self._clauses:
+            return None
+        # Pop first item from ordered dict
+        key, c = next(iter(self._clauses.items()))
+        del self._clauses[key]
+        return c
+
     def __iter__(self):
-        return iter(self._clauses)
+        return iter(self._clauses.values())
 
     def __len__(self) -> int:
         return len(self._clauses)
@@ -104,6 +114,16 @@ class SearchState:
     # Search control
     searching: bool = False
     return_code: int = 0
+
+    def reserve_clause_ids(self, count: int) -> None:
+        """Reserve clause IDs without assigning them to clauses.
+
+        C Prover9 assigns IDs 1..N to goal formulas before clausification,
+        so the first kept clause gets ID (N+1). This method advances the
+        counter to match that behavior.
+        """
+        with self._id_lock:
+            self._next_clause_id += count
 
     def assign_clause_id(self, c: Clause) -> int:
         """Assign the next clause ID. Matches C assign_clause_id()."""

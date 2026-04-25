@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 import time
@@ -18,6 +19,7 @@ from typing import TextIO
 
 from pyladr import __version__
 from pyladr.apps.cli_common import (
+    _configure_runtime,
     format_clause_bare,
     format_clause_standard,
     print_separator,
@@ -32,6 +34,74 @@ from pyladr.search.given_clause import (
     SearchOptions,
     SearchResult,
 )
+
+# ── C++ backend activation ────────────────────────────────────────────────
+
+def _configure_cpp_backend(use_cpp: bool) -> None:
+    """Activate the C++ backend when --cpp is passed."""
+    if not use_cpp:
+        return
+    from pyladr.cpp_backend import enable
+    if enable():
+        print("% C++ backend enabled (_pyladr_core)")
+
+
+# ── Entropy calculation utility ───────────────────────────────────────────
+
+def _calculate_structural_entropy(clause) -> float:
+    """Calculate Shannon entropy of clause interpreted as tree structure.
+
+    Duplicates logic from GivenClauseSearch._calculate_structural_entropy()
+    to avoid circular import dependencies.
+    """
+    node_counts = {
+        'clause': 0,
+        'literal': 0,
+        'predicate': 0,
+        'function': 0,
+        'variable': 0,
+        'constant': 0
+    }
+
+    # Count clause node
+    node_counts['clause'] = 1
+
+    # Count literals
+    node_counts['literal'] = len(clause.literals)
+
+    # Count predicate, function, variable, constant nodes in all terms
+    for literal in clause.literals:
+        _count_term_nodes(literal.atom, node_counts, is_predicate=True)
+
+    # Calculate entropy
+    total_nodes = sum(node_counts.values())
+    if total_nodes <= 1:
+        return 0.0
+
+    entropy = 0.0
+    for count in node_counts.values():
+        if count > 0:
+            p = count / total_nodes
+            entropy += p * math.log2(p)
+
+    return entropy
+
+def _count_term_nodes(term, node_counts: dict, is_predicate: bool = False) -> None:
+    """Recursively count nodes in a term tree."""
+    if term.is_variable:
+        node_counts['variable'] += 1
+    elif term.is_constant:
+        node_counts['constant'] += 1
+    else:
+        # Complex term - distinguish between predicate and function
+        if is_predicate:
+            node_counts['predicate'] += 1
+        else:
+            node_counts['function'] += 1
+
+        # Recursively count argument nodes
+        for arg in term.args:
+            _count_term_nodes(arg, node_counts, is_predicate=False)
 
 # ── Exit code mapping ──────────────────────────────────────────────────────
 
@@ -123,6 +193,31 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Stop after N proofs (default: 1)",
     )
+    limits.add_argument(
+        "-max_weight",
+        type=float,
+        default=-1.0,
+        metavar="W",
+        help="Discard clauses heavier than W (-1 = no limit). "
+             "Also settable via assign(max_weight, W). in the input file.",
+    )
+    limits.add_argument(
+        "--max-weight-tighten-after",
+        type=int,
+        default=0,
+        metavar="N",
+        dest="max_weight_tighten_after",
+        help="After N given clauses, tighten max_weight to --max-weight-tighten-to. "
+             "0 = disabled (default).",
+    )
+    limits.add_argument(
+        "--max-weight-tighten-to",
+        type=float,
+        default=-1.0,
+        metavar="W",
+        dest="max_weight_tighten_to",
+        help="New max_weight cap applied after --max-weight-tighten-after given clauses.",
+    )
 
     # Inference rules
     inference = parser.add_argument_group("inference rules")
@@ -157,6 +252,683 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Enable back demodulation",
     )
 
+    # Selection strategy
+    selection = parser.add_argument_group("selection strategy")
+    selection.add_argument(
+        "--weight-ratio",
+        type=int,
+        default=4,
+        metavar="N",
+        dest="weight_ratio",
+        help="Number of weight-based selections per age-based selection (default: 4). "
+             "Combined with 1 age slot gives a cycle of 1+N. "
+             "Equivalent to C Prover9's age_factor=N+1.",
+    )
+    selection.add_argument(
+        "--entropy-weight",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Ratio weight for entropy-based clause selection (0 = disabled, default: 0). "
+             "Adds N entropy selections per cycle alongside age and weight selections.",
+    )
+    selection.add_argument(
+        "--penalty-propagation",
+        action="store_true",
+        default=False,
+        help="Enable parent-to-child penalty propagation for overly general clauses.",
+    )
+    selection.add_argument(
+        "--penalty-propagation-mode",
+        type=str,
+        default="additive",
+        choices=["additive", "multiplicative", "max"],
+        metavar="MODE",
+        help="Penalty combination mode: additive (default), multiplicative, or max.",
+    )
+    selection.add_argument(
+        "--penalty-propagation-decay",
+        type=float,
+        default=0.5,
+        metavar="D",
+        help="Decay factor per generation for inherited penalties (0.0-1.0, default: 0.5).",
+    )
+    selection.add_argument(
+        "--penalty-propagation-threshold",
+        type=float,
+        default=5.0,
+        metavar="T",
+        help="Minimum parent penalty to trigger propagation (default: 5.0).",
+    )
+    selection.add_argument(
+        "--unification-weight",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Ratio weight for generality-penalty clause selection (0 = disabled, default: 0). "
+             "Adds N penalty selections per cycle, preferring specific clauses to reduce "
+             "unification explosion.",
+    )
+    selection.add_argument(
+        "--repetition-penalty",
+        action="store_true",
+        default=False,
+        help="Enable subformula repetition penalty (deprioritize clauses with repeated patterns).",
+    )
+    selection.add_argument(
+        "--repetition-penalty-weight",
+        type=float,
+        default=2.0,
+        metavar="W",
+        help="Penalty per extra occurrence of a repeated subformula (default: 2.0).",
+    )
+    selection.add_argument(
+        "--repetition-penalty-min-size",
+        type=int,
+        default=2,
+        metavar="S",
+        help="Minimum subterm size (symbol count) to consider for repetition (default: 2).",
+    )
+    selection.add_argument(
+        "--repetition-penalty-max",
+        type=float,
+        default=15.0,
+        metavar="M",
+        help="Maximum total repetition penalty per clause (default: 15.0).",
+    )
+    selection.add_argument(
+        "--repetition-penalty-normalize",
+        action="store_true",
+        default=False,
+        help="Enable variable-agnostic matching (i(x,x) ≡ i(y,y)).",
+    )
+    selection.add_argument(
+        "--nucleus-unification-penalty",
+        action="store_true",
+        default=False,
+        help="Enable nucleus unification penalty (deprioritize overly permissive hyperresolution nuclei).",
+    )
+    selection.add_argument(
+        "--nucleus-penalty-threshold",
+        type=float,
+        default=3.0,
+        metavar="T",
+        help="Minimum nucleus penalty to apply (default: 3.0).",
+    )
+    selection.add_argument(
+        "--nucleus-penalty-weight",
+        type=float,
+        default=1.5,
+        metavar="W",
+        help="Base penalty per overly general nucleus literal (default: 1.5).",
+    )
+    selection.add_argument(
+        "--nucleus-penalty-max",
+        type=float,
+        default=15.0,
+        metavar="M",
+        help="Maximum total nucleus penalty per clause (default: 15.0).",
+    )
+    selection.add_argument(
+        "--nucleus-penalty-cache-size",
+        type=int,
+        default=10000,
+        metavar="N",
+        help="Maximum cached nucleus patterns for LRU eviction (default: 10000).",
+    )
+    selection.add_argument(
+        "--penalty-weight",
+        action="store_true",
+        default=False,
+        help="Enable penalty-based clause weight adjustment (deprioritize high-penalty clauses).",
+    )
+    selection.add_argument(
+        "--penalty-weight-threshold",
+        type=float,
+        default=5.0,
+        metavar="T",
+        help="Minimum combined penalty to trigger weight adjustment (default: 5.0).",
+    )
+    selection.add_argument(
+        "--penalty-weight-multiplier",
+        type=float,
+        default=2.0,
+        metavar="M",
+        help="Weight increase factor (>= 1.0, default: 2.0).",
+    )
+    selection.add_argument(
+        "--penalty-weight-max",
+        type=float,
+        default=1000.0,
+        metavar="W",
+        help="Maximum adjusted clause weight cap (default: 1000.0).",
+    )
+    selection.add_argument(
+        "--penalty-weight-mode",
+        type=str,
+        default="exponential",
+        choices=["linear", "exponential", "step"],
+        metavar="MODE",
+        help="Weight adjustment mode: linear, exponential (default), or step.",
+    )
+
+    # Machine Learning
+    ml_group = parser.add_argument_group("machine learning")
+    ml_group.add_argument(
+        "--online-learning",
+        action="store_true",
+        default=False,
+        help="Enable online learning from proof search feedback.",
+    )
+    ml_group.add_argument(
+        "--ml-weight",
+        type=float,
+        metavar="W",
+        help="ML selection weight (0.0-1.0, default: auto-determine).",
+    )
+    ml_group.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=32,
+        metavar="D",
+        help="Embedding dimension for neural networks (default: 32).",
+    )
+    ml_group.add_argument(
+        "--goal-directed",
+        action="store_true",
+        default=False,
+        help="Enable goal-directed clause selection using goal proximity scoring.",
+    )
+    ml_group.add_argument(
+        "--goal-proximity-weight",
+        type=float,
+        default=0.3,
+        metavar="W",
+        help="Goal proximity influence weight (0.0-1.0, default: 0.3). "
+             "Higher values focus search more strongly on goal-relevant clauses.",
+    )
+    ml_group.add_argument(
+        "--embedding-evolution-rate",
+        type=float,
+        default=0.01,
+        metavar="R",
+        help="Embedding evolution rate for online learning (default: 0.01).",
+    )
+    ml_group.add_argument(
+        "--learn-from-back-subsumption",
+        action="store_true",
+        default=False,
+        help="Enable ML learning from back-subsumption events.",
+    )
+    ml_group.add_argument(
+        "--learn-from-forward-subsumption",
+        action="store_true",
+        default=False,
+        help="Enable ML learning from forward-subsumption events.",
+    )
+    ml_group.add_argument(
+        "--forte-embeddings",
+        action="store_true",
+        default=False,
+        help="Enable FORTE (First-Order Reasoning with Transformers) embeddings.",
+    )
+    ml_group.add_argument(
+        "--forte-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        help="FORTE selection ratio weight (0 = disabled, default: 0). "
+             "Adds W FORTE selections per cycle alongside age and weight.",
+    )
+    ml_group.add_argument(
+        "--forte-dim",
+        type=int,
+        default=128,
+        metavar="D",
+        help="FORTE embedding dimension (default: 128).",
+    )
+    ml_group.add_argument(
+        "--forte-cache",
+        type=int,
+        default=10000,
+        metavar="N",
+        help="FORTE embedding cache size in entries (default: 10000).",
+    )
+    ml_group.add_argument(
+        "--proof-guided",
+        action="store_true",
+        default=False,
+        help="Enable proof-guided clause selection (requires --forte-embeddings).",
+    )
+    ml_group.add_argument(
+        "--proof-guided-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        help="Proof-guided selection ratio weight (0 = disabled, default: 0). "
+             "Adds W proof-guided selections per cycle.",
+    )
+    ml_group.add_argument(
+        "--proof-guided-exploitation",
+        type=float,
+        default=0.7,
+        metavar="R",
+        help="Exploitation/exploration ratio (0.0-1.0, default: 0.7). "
+             "Higher values favor clauses similar to successful proof patterns.",
+    )
+    ml_group.add_argument(
+        "--proof-guided-decay",
+        type=float,
+        default=0.95,
+        metavar="D",
+        help="Proof pattern decay rate per proof event (0.0-1.0, default: 0.95).",
+    )
+    ml_group.add_argument(
+        "--proof-guided-max-patterns",
+        type=int,
+        default=500,
+        metavar="N",
+        help="Maximum proof pattern embeddings to retain (default: 500).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-embeddings",
+        action="store_true",
+        default=False,
+        help="Enable Tree2Vec unsupervised structural embeddings. "
+             "Trains on input formulas via skip-gram over tree walks.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        help="Tree2Vec selection ratio weight (0 = disabled, default: 0). "
+             "Adds W Tree2Vec selections per cycle alongside other strategies.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-maximin-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        dest="tree2vec_maximin_weight",
+        help="Tree2Vec maximin selection ratio weight (0 = disabled, default: 0). "
+             "Selects the clause with the smallest farthest-goal distance: "
+             "the clause most uniformly close to all goals (minimax distance).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-dim",
+        type=int,
+        default=64,
+        metavar="D",
+        help="Tree2Vec embedding dimension (default: 64).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-cache",
+        type=int,
+        default=10000,
+        metavar="N",
+        help="Tree2Vec embedding cache size in entries (default: 10000).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-position",
+        action="store_true",
+        default=False,
+        help="Encode argument position in Tree2Vec walk tokens. "
+             "Distinguishes i(A,B) arg0 vs arg1 (important for asymmetric functions).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-depth",
+        action="store_true",
+        default=False,
+        help="Encode tree depth in Tree2Vec walk tokens for all node types "
+             "including variables (VAR#depth). "
+             "Distinguishes i(A,B) at depth 0 from i(A,B) at depth 2.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-var-identity",
+        action="store_true",
+        default=False,
+        help="Encode De Bruijn-style variable identity in Tree2Vec walk tokens. "
+             "Variables are emitted as VAR_1, VAR_2, ... in order of first appearance "
+             "within each walk. Repeated occurrences of the same variable receive the "
+             "same index, capturing variable sharing across subtrees (e.g. both sides "
+             "of an i/2 term). Alpha-equivalent terms receive identical encodings.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-skip-predicate",
+        action="store_true",
+        default=True,
+        dest="tree2vec_skip_predicate",
+        help="Skip predicate wrapper in Tree2Vec walks (default: enabled). "
+             "Generates walks from predicate arguments directly, "
+             "focusing embeddings on term structure rather than predicate symbols.",
+    )
+    ml_group.add_argument(
+        "--no-tree2vec-skip-predicate",
+        action="store_false",
+        dest="tree2vec_skip_predicate",
+        help="Disable skip-predicate-wrapper in Tree2Vec walks.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-path-length",
+        action="store_true",
+        default=True,
+        dest="tree2vec_path_length",
+        help="Prepend path length token (PATHLEN:<n>) to PATH walks (default: enabled). "
+             "Helps the model distinguish shallow vs deep formula paths.",
+    )
+    ml_group.add_argument(
+        "--no-tree2vec-path-length",
+        action="store_false",
+        dest="tree2vec_path_length",
+        help="Disable path-length tokens in Tree2Vec PATH walks.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-composition",
+        type=str,
+        choices=["mean", "weighted_depth", "root_concat"],
+        default="weighted_depth",
+        help="Tree2Vec embedding composition strategy (default: weighted_depth). "
+             "mean: average all token embeddings; "
+             "weighted_depth: weight by inverse depth (root has most weight); "
+             "root_concat: concatenate root embedding with mean of rest.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-online-learning",
+        action="store_true",
+        default=False,
+        help="Enable online Tree2Vec learning during search. "
+             "Periodically updates embeddings from kept clauses.",
+    )
+    ml_group.add_argument(
+        "--no-tree2vec-bg-update",
+        action="store_false",
+        default=True,
+        dest="tree2vec_bg_update",
+        help="Disable background-thread online T2V updates (run synchronously instead). "
+             "Useful for debugging or deterministic output. Default: background updates enabled.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-dump-embeddings",
+        metavar="FILE",
+        default="",
+        dest="tree2vec_dump_embeddings",
+        help="Write SOS clause embeddings to FILE (JSON) after each Tree2Vec training. "
+             "Each entry contains the clause text, embedding vector, clause weight, "
+             "model metadata, and whether the clause appeared in a proof. "
+             "The file is overwritten after every update.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-online-interval",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Clauses kept between Tree2Vec online updates (default: 20).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-online-batch-size",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Max clauses per Tree2Vec online update batch (default: 10).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-online-lr",
+        type=float,
+        default=0.005,
+        metavar="LR",
+        help="Learning rate for online Tree2Vec skipgram updates (default: 0.005).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-online-max-updates",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Stop Tree2Vec online retraining after N updates (default: 0 = unlimited).",
+    )
+    ml_group.add_argument(
+        "--tree2vec-goal-proximity",
+        action="store_true",
+        default=False,
+        help="Enable goal-directed Tree2Vec selection. "
+             "Wraps Tree2Vec provider with goal proximity scoring.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-goal-proximity-weight",
+        type=float,
+        default=0.3,
+        metavar="W",
+        help="Goal proximity influence weight for Tree2Vec (default: 0.3). "
+             "Higher values bias more toward goal-similar clauses.",
+    )
+    ml_group.add_argument(
+        "--no-tree2vec-cross-arg",
+        action="store_false",
+        dest="tree2vec_cross_arg_proximity",
+        default=True,
+        help="Disable cross-argument proximity scoring for Tree2Vec goal selection. "
+             "When enabled (default), uses antecedent/consequent cross-similarity "
+             "for condensed detachment compatibility.",
+    )
+
+    ml_group.add_argument(
+        "--tree2vec-train-corpus",
+        metavar="FILE",
+        default=None,
+        dest="tree2vec_train_corpus",
+        help="Train Tree2Vec on FILE (LADR format), save model to FILE.t2v.json, exit.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-corpus-search",
+        action="store_true",
+        default=False,
+        dest="tree2vec_corpus_search",
+        help="Before training, run a diversity-oriented proof search to expand the "
+             "training corpus with derived clauses. Use with --tree2vec-train-corpus.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-corpus-given",
+        type=int,
+        default=500,
+        metavar="N",
+        dest="tree2vec_corpus_given",
+        help="Max given-clause steps for the corpus-generation search (default: 500). "
+             "Uses the same search parameters as a normal proof search so the "
+             "training distribution matches inference time.",
+    )
+    ml_group.add_argument(
+        "--tree2vec-load-model",
+        metavar="FILE",
+        default=None,
+        dest="tree2vec_load_model",
+        help="Load pre-trained Tree2Vec model from FILE. Implies --tree2vec-embeddings.",
+    )
+
+    # RNN2Vec embedding options
+    ml_group.add_argument(
+        "--rnn2vec-embeddings",
+        action="store_true",
+        default=False,
+        help="Enable RNN2Vec structural embeddings. "
+             "Trains an RNN encoder on tree walks via contrastive learning.",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        help="RNN2Vec selection ratio weight (0 = disabled, default: 0).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-dim",
+        type=int,
+        default=64,
+        metavar="D",
+        dest="rnn2vec_dim",
+        help="RNN2Vec output embedding dimension (default: 64).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-hidden-dim",
+        type=int,
+        default=64,
+        metavar="D",
+        dest="rnn2vec_hidden_dim",
+        help="RNN2Vec hidden state dimension (default: 64).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-input-dim",
+        type=int,
+        default=32,
+        metavar="D",
+        dest="rnn2vec_input_dim",
+        help="RNN2Vec token embedding dimension (default: 32).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-cache",
+        type=int,
+        default=10000,
+        metavar="N",
+        dest="rnn2vec_cache",
+        help="RNN2Vec embedding cache size (default: 10000).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-rnn-type",
+        type=str,
+        choices=["gru", "lstm", "elman"],
+        default="gru",
+        dest="rnn2vec_rnn_type",
+        help="RNN variant for RNN2Vec encoder (default: gru).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-composition",
+        type=str,
+        choices=["last_hidden", "mean_pool", "attention_pool"],
+        default="mean",
+        dest="rnn2vec_composition",
+        help="RNN2Vec embedding composition strategy (default: mean).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-online-learning",
+        action="store_true",
+        default=False,
+        help="Enable online RNN2Vec updates during search.",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-online-interval",
+        type=int,
+        default=20,
+        metavar="N",
+        dest="rnn2vec_online_interval",
+        help="Clauses kept between RNN2Vec online updates (default: 20).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-online-batch-size",
+        type=int,
+        default=10,
+        metavar="N",
+        dest="rnn2vec_online_batch_size",
+        help="Max clauses per RNN2Vec online update batch (default: 10).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-online-lr",
+        type=float,
+        default=0.001,
+        metavar="LR",
+        dest="rnn2vec_online_lr",
+        help="Learning rate for online RNN2Vec updates (default: 0.001).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-online-max-updates",
+        type=int,
+        default=0,
+        metavar="N",
+        dest="rnn2vec_online_max_updates",
+        help="Stop RNN2Vec online updates after N (default: 0 = unlimited).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-training-epochs",
+        type=int,
+        default=5,
+        metavar="N",
+        dest="rnn2vec_training_epochs",
+        help="RNN2Vec initial training epochs (default: 5).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-training-lr",
+        type=float,
+        default=0.001,
+        metavar="LR",
+        dest="rnn2vec_training_lr",
+        help="RNN2Vec initial training learning rate (default: 0.001).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-load-model",
+        metavar="DIR",
+        default=None,
+        dest="rnn2vec_load_model",
+        help="Load pre-trained RNN2Vec model from DIR. Implies --rnn2vec-embeddings.",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-save-model",
+        metavar="DIR",
+        default="",
+        dest="rnn2vec_save_model",
+        help="Save the trained RNN2Vec model to DIR after training completes. "
+             "The directory is created if it does not exist. "
+             "Can be reloaded later with --rnn2vec-load-model.",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-dump-embeddings",
+        metavar="FILE",
+        default="",
+        dest="rnn2vec_dump_embeddings",
+        help="Write SOS clause embeddings to FILE (JSON) after each RNN2Vec training. "
+             "Same format as --tree2vec-dump-embeddings. "
+             "The file is overwritten after every update.",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-goal-proximity",
+        action="store_true",
+        default=False,
+        dest="rnn2vec_goal_proximity",
+        help="Enable goal-proximity scoring for RNN2Vec clause selection.",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-goal-proximity-weight",
+        type=float,
+        default=0.3,
+        metavar="W",
+        dest="rnn2vec_goal_proximity_weight",
+        help="Weight of goal proximity in RNN2Vec scoring (default: 0.3).",
+    )
+    ml_group.add_argument(
+        "--rnn2vec-random-goal-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        dest="rnn2vec_random_goal_weight",
+        help=(
+            "Selection ratio weight for random-goal proximity mode. "
+            "Each turn this rule fires, a goal is chosen at random and the "
+            "SOS clause nearest to it (by RNN2Vec cosine similarity) is selected. "
+            "0 disables (default: 0)."
+        ),
+    )
+
+    # Performance / backend
+    perf = parser.add_argument_group("performance")
+    perf.add_argument(
+        "--cpp",
+        action="store_true",
+        default=False,
+        dest="use_cpp",
+        help=(
+            "Enable C++ extension for unification and term operations. "
+            "Requires the _pyladr_core extension to be compiled "
+            "(run build_cpp.sh). Falls back to pure Python if unavailable."
+        ),
+    )
+
     # Output control
     output = parser.add_argument_group("output")
     output.add_argument(
@@ -177,6 +949,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Do not print each given clause",
+    )
+    output.add_argument(
+        "--print-given-stats",
+        action="store_true",
+        default=False,
+        help="Print per-given-clause inference count statistics",
     )
 
     return parser
@@ -224,10 +1002,11 @@ def _skolemize_term(t, var_to_skolem: dict[int, 'Term']) -> 'Term':
 def _deny_goals(
     parsed: ParsedInput,
     symbol_table: SymbolTable,
-) -> tuple[list[Clause], list[Clause]]:
+) -> tuple[list[Clause], list[Clause], list[Clause]]:
     """Negate goals and add them to SOS for refutation-based proving.
 
-    Returns (usable_clauses, sos_clauses) ready for the search engine.
+    Returns (usable_clauses, sos_clauses, denied_clauses) where denied_clauses
+    is parallel to parsed.goals (denied_clauses[i] is the negation of parsed.goals[i]).
 
     Matches C Prover9 semantics:
     - Goal: ∀x₁...∀xₙ φ(x₁,...,xₙ)
@@ -241,6 +1020,7 @@ def _deny_goals(
 
     usable = list(parsed.usable)
     sos = list(parsed.sos)
+    denied_clauses: list[Clause] = []
 
     skolem_counter = 1
 
@@ -253,7 +1033,7 @@ def _deny_goals(
         # Create Skolem constants for each variable
         var_to_skolem: dict[int, Term] = {}
         for varnum in sorted(all_vars):
-            name = f"c{skolem_counter}"
+            name = f"_sk{skolem_counter}"
             skolem_counter += 1
             sn = symbol_table.str_to_sn(name, 0)
             symbol_table.mark_skolem(sn)
@@ -272,8 +1052,9 @@ def _deny_goals(
             justification=(Justification(just_type=JustType.DENY, clause_ids=(0,)),),
         )
         sos.append(denied)
+        denied_clauses.append(denied)
 
-    return usable, sos
+    return usable, sos, denied_clauses
 
 
 # ── Auto-detect inference settings ────────────────────────────────────────
@@ -315,12 +1096,19 @@ def _auto_inference(
             opts.hyper_resolution = True
             opts.binary_resolution = False
 
-        # Auto limits (C: set(auto) -> set(auto_limits))
-        # Apply default auto limits only if not explicitly overridden
-        if opts.max_weight < 0:
-            opts.max_weight = 100.0
-        if opts.sos_limit < 0:
-            opts.sos_limit = 20000
+
+def _auto_limits(
+    parsed: ParsedInput,
+    opts: SearchOptions,
+) -> None:
+    """Apply default auto limits (C: set(auto) -> set(auto_limits)).
+
+    Only sets defaults when not explicitly overridden by assign() directives.
+    """
+    if opts.max_weight < 0:
+        opts.max_weight = 100.0
+    if opts.sos_limit < 0:
+        opts.sos_limit = 20000
 
 
 # ── Output formatting ─────────────────────────────────────────────────────
@@ -403,6 +1191,8 @@ def _print_proof(
     search_seconds: float,
     symbol_table: SymbolTable,
     out: TextIO,
+    entropy_weight: int = 0,
+    unification_weight: int = 0,
 ) -> None:
     """Print a proof in C Prover9 format."""
     print(file=out)
@@ -421,9 +1211,24 @@ def _print_proof(
     print(f"% Maximum clause weight is {max_weight:.3f}.", file=out)
     print(file=out)
 
-    # Print proof clauses
     for clause in proof.clauses:
-        print(f"{format_clause_standard(clause, symbol_table)}", file=out)
+        clause_str = format_clause_standard(clause, symbol_table)
+        extras: list[str] = []
+        if clause.given_selection:
+            extras.append(f"given: {clause.given_selection}")
+        if entropy_weight > 0:
+            entropy = _calculate_structural_entropy(clause)
+            extras.append(f"entropy: {entropy:.2f}")
+        if unification_weight > 0:
+            from pyladr.search.selection import _clause_generality_penalty
+            penalty = _clause_generality_penalty(clause)
+            extras.append(f"penalty: {penalty:.2f}")
+        if clause.given_distance > 0.0:
+            extras.append(f"gd: {clause.given_distance:.4f}")
+        if extras:
+            print(f"{clause_str}  [{', '.join(extras)}]", file=out)
+        else:
+            print(f"{clause_str}", file=out)
     print(file=out)
     print_separator("end of proof")
 
@@ -431,6 +1236,8 @@ def _print_proof(
 def _print_statistics(
     result: SearchResult,
     out: TextIO,
+    print_given_stats: bool = False,
+    ml_selection_stats: object | None = None,
 ) -> None:
     """Print STATISTICS section matching C format."""
     stats = result.stats
@@ -452,6 +1259,23 @@ def _print_statistics(
             f"Back_demodulated={stats.back_demodulated}.",
             file=out,
         )
+    if print_given_stats and stats.given_inference_counts:
+        print(file=out)
+        top = stats.top_given_clauses(10)
+        print("Given_inference_counts (top 10 most productive):", file=out)
+        for clause_id, count in top:
+            print(f"  given_clause_{clause_id}={count}.", file=out)
+    # ML selection statistics (only when ML was actually used)
+    if ml_selection_stats is not None:
+        ml_report = ml_selection_stats.report()
+        if ml_selection_stats.ml_selections > 0 or ml_selection_stats.traditional_selections > 0:
+            print(file=out)
+            print(f"ML_selection: {ml_report}", file=out)
+    # T2V goal-distance histogram
+    if stats.t2v_distance_histogram is not None:
+        from pyladr.search.given_clause import format_t2v_histogram
+        print(file=out)
+        print(format_t2v_histogram(stats.t2v_distance_histogram, stats.proofs), file=out)
     print(f"User_CPU={stats.elapsed_seconds():.2f}.", file=out)
     print(file=out)
     print_separator("end of statistics")
@@ -496,6 +1320,466 @@ def _print_conclusion(
     )
 
 
+# ── Apply parsed LADR settings to SearchOptions ───────────────────────────
+
+
+# ── Declarative LADR→SearchOptions mappings ──────────────────────────────
+
+# assign() directives: LADR name → (SearchOptions field, type converter)
+_ASSIGN_MAP: dict[str, tuple[str, type]] = {
+    "max_proofs": ("max_proofs", int),
+    "max_given": ("max_given", int),
+    "max_kept": ("max_kept", int),
+    "max_seconds": ("max_seconds", float),
+    "max_generated": ("max_generated", int),
+    "max_weight": ("max_weight", float),
+    "sos_limit": ("sos_limit", int),
+    "weight_ratio": ("weight_ratio", int),
+    "entropy_weight": ("entropy_weight", int),
+    "unification_weight": ("unification_weight", int),
+    "penalty_propagation_decay": ("penalty_propagation_decay", float),
+    "penalty_propagation_threshold": ("penalty_propagation_threshold", float),
+    "penalty_propagation_mode": ("penalty_propagation_mode", str),
+    "penalty_propagation_max_depth": ("penalty_propagation_max_depth", int),
+    "penalty_propagation_max": ("penalty_propagation_max", float),
+    "repetition_penalty_weight": ("repetition_penalty_weight", float),
+    "repetition_penalty_min_size": ("repetition_penalty_min_size", int),
+    "repetition_penalty_max": ("repetition_penalty_max", float),
+    "nucleus_penalty_threshold": ("nucleus_penalty_threshold", float),
+    "nucleus_penalty_weight": ("nucleus_penalty_weight", float),
+    "nucleus_penalty_max": ("nucleus_penalty_max", float),
+    "nucleus_penalty_cache_size": ("nucleus_penalty_cache_size", int),
+    "hint_wt": ("hint_wt", float),
+    "penalty_weight_threshold": ("penalty_weight_threshold", float),
+    "penalty_weight_multiplier": ("penalty_weight_multiplier", float),
+    "penalty_weight_max": ("penalty_weight_max", float),
+    "penalty_weight_mode": ("penalty_weight_mode", str),
+    "ml_weight": ("ml_weight", float),
+    "goal_proximity_weight": ("goal_proximity_weight", float),
+    "embedding_dim": ("embedding_dim", int),
+    "embedding_evolution_rate": ("embedding_evolution_rate", float),
+    "forte_weight": ("forte_weight", float),
+    "forte_embedding_dim": ("forte_embedding_dim", int),
+    "forte_cache_max_entries": ("forte_cache_max_entries", int),
+    "proof_guided_weight": ("proof_guided_weight", float),
+    "proof_guided_exploitation_ratio": ("proof_guided_exploitation_ratio", float),
+    "proof_guided_decay_rate": ("proof_guided_decay_rate", float),
+    "proof_guided_max_patterns": ("proof_guided_max_patterns", int),
+    "tree2vec_online_update_interval": ("tree2vec_online_update_interval", int),
+    "tree2vec_online_batch_size": ("tree2vec_online_batch_size", int),
+    "tree2vec_online_lr": ("tree2vec_online_lr", float),
+    "tree2vec_online_max_updates": ("tree2vec_online_max_updates", int),
+    "tree2vec_goal_proximity_weight": ("tree2vec_goal_proximity_weight", float),
+    "tree2vec_maximin_weight": ("tree2vec_maximin_weight", float),
+    "tree2vec_proximity_report_interval": ("tree2vec_proximity_report_interval", int),
+    "tree2vec_composition": ("tree2vec_composition", str),
+    "rnn2vec_weight": ("rnn2vec_weight", float),
+    "rnn2vec_hidden_dim": ("rnn2vec_hidden_dim", int),
+    "rnn2vec_embedding_dim": ("rnn2vec_embedding_dim", int),
+    "rnn2vec_input_dim": ("rnn2vec_input_dim", int),
+    "rnn2vec_num_layers": ("rnn2vec_num_layers", int),
+    "rnn2vec_cache_max_entries": ("rnn2vec_cache_max_entries", int),
+    "rnn2vec_online_update_interval": ("rnn2vec_online_update_interval", int),
+    "rnn2vec_online_batch_size": ("rnn2vec_online_batch_size", int),
+    "rnn2vec_online_lr": ("rnn2vec_online_lr", float),
+    "rnn2vec_online_max_updates": ("rnn2vec_online_max_updates", int),
+    "rnn2vec_training_epochs": ("rnn2vec_training_epochs", int),
+    "rnn2vec_training_lr": ("rnn2vec_training_lr", float),
+    "rnn2vec_composition": ("rnn2vec_composition", str),
+    "rnn2vec_rnn_type": ("rnn2vec_rnn_type", str),
+    "rnn2vec_goal_proximity_weight": ("rnn2vec_goal_proximity_weight", float),
+    "rnn2vec_random_goal_weight": ("rnn2vec_random_goal_weight", float),
+    "lex_dep_demod_lim": ("lex_dep_demod_lim", int),
+    "demod_step_limit": ("demod_step_limit", int),
+    "backsub_check": ("backsub_check", int),
+    "max_weight_tighten_after": ("max_weight_tighten_after", int),
+    "max_weight_tighten_to": ("max_weight_tighten_to", float),
+}
+
+# Two-way flags: set()/clear() both honored. LADR name → SearchOptions field.
+_FLAG_MAP: dict[str, str] = {
+    "binary_resolution": "binary_resolution",
+    "hyper_resolution": "hyper_resolution",
+    "factoring": "factoring",
+    "paramodulation": "paramodulation",
+    "demodulation": "demodulation",
+    "back_demod": "back_demod",
+    "lex_order_vars": "lex_order_vars",
+    "check_tautology": "check_tautology",
+    "merge_lits": "merge_lits",
+    "priority_sos": "priority_sos",
+    "lazy_demod": "lazy_demod",
+    "print_given": "print_given",
+    "print_kept": "print_kept",
+    "print_gen": "print_gen",
+    "print_given_stats": "print_given_stats",
+    "tree2vec_skip_predicate": "tree2vec_skip_predicate",
+    "tree2vec_include_path_length": "tree2vec_include_path_length",
+}
+
+# One-way flags: only set(flag) is honored (set to True); clear() is ignored.
+# LADR name → SearchOptions field.
+_SET_ONLY_FLAG_MAP: dict[str, str] = {
+    "penalty_propagation": "penalty_propagation",
+    "repetition_penalty": "repetition_penalty",
+    "repetition_penalty_normalize": "repetition_penalty_normalize",
+    "nucleus_unification_penalty": "nucleus_unification_penalty",
+    "penalty_weight": "penalty_weight_enabled",
+    "online_learning": "online_learning",
+    "goal_directed": "goal_directed",
+    "forte_embeddings": "forte_embeddings",
+    "proof_guided": "proof_guided",
+    "tree2vec_embeddings": "tree2vec_embeddings",
+    "tree2vec_include_position": "tree2vec_include_position",
+    "tree2vec_include_depth": "tree2vec_include_depth",
+    "tree2vec_include_var_identity": "tree2vec_include_var_identity",
+    "tree2vec_online_learning": "tree2vec_online_learning",
+    "tree2vec_goal_proximity": "tree2vec_goal_proximity",
+    "rnn2vec_embeddings": "rnn2vec_embeddings",
+    "rnn2vec_online_learning": "rnn2vec_online_learning",
+    "rnn2vec_bidirectional": "rnn2vec_bidirectional",
+    "rnn2vec_goal_proximity": "rnn2vec_goal_proximity",
+}
+
+# Extra recognized names not in the maps above (handled by auto-inference etc.)
+_EXTRA_KNOWN_FLAGS = {
+    "auto", "auto_inference", "auto_setup", "auto_limits",
+    "auto_denials", "auto_process", "predicate_elim",
+}
+_EXTRA_KNOWN_ASSIGNS = {"eq_defs"}
+
+# Derived known-name sets for unrecognized-name warnings
+_KNOWN_FLAGS = set(_FLAG_MAP) | set(_SET_ONLY_FLAG_MAP) | _EXTRA_KNOWN_FLAGS
+_KNOWN_ASSIGNS = set(_ASSIGN_MAP) | _EXTRA_KNOWN_ASSIGNS
+
+
+def _apply_settings(parsed, opts: SearchOptions, st=None) -> None:
+    """Apply parsed assign()/set()/clear() directives from LADR input to SearchOptions."""
+    # assign() directives (LADR input overrides CLI defaults)
+    for assign_key, (field_name, converter) in _ASSIGN_MAP.items():
+        if assign_key in parsed.assigns:
+            setattr(opts, field_name, converter(parsed.assigns[assign_key]))
+
+    # Two-way flags: both set() and clear() are honored
+    for flag_key, field_name in _FLAG_MAP.items():
+        if flag_key in parsed.flags:
+            setattr(opts, field_name, parsed.flags[flag_key])
+
+    # One-way flags: only set() is honored (enables the feature)
+    for flag_key, field_name in _SET_ONLY_FLAG_MAP.items():
+        if parsed.flags.get(flag_key, False):
+            setattr(opts, field_name, True)
+
+    # Warn about unrecognized set()/clear() flags and assign() directives
+    for flag_name in parsed.flags:
+        if flag_name not in _KNOWN_FLAGS:
+            print(f"WARNING: unrecognized flag '{flag_name}' (ignored).",
+                  file=sys.stderr)
+    for assign_name in parsed.assigns:
+        if assign_name not in _KNOWN_ASSIGNS:
+            print(f"WARNING: unrecognized parameter '{assign_name}' (ignored).",
+                  file=sys.stderr)
+
+
+# ── ML Selection Factory ────────────────────────────────────────────────────
+
+
+def _should_use_ml_selection(opts: SearchOptions) -> bool:
+    """Determine if ML selection should be used."""
+    return (opts.online_learning or
+            opts.ml_weight is not None or
+            opts.goal_directed)
+
+
+def _create_ml_selection(opts: SearchOptions, symbol_table: SymbolTable):
+    """Create ML-enhanced selection with goal-directed features."""
+    try:
+        from pyladr.search.ml_selection import EmbeddingEnhancedSelection, MLSelectionConfig
+        from pyladr.search.goal_directed import GoalDirectedEmbeddingProvider, GoalDirectedConfig
+
+        # Create base embedding provider (with error handling for missing torch)
+        try:
+            from pyladr.ml.embedding_provider import create_embedding_provider
+            base_provider = create_embedding_provider(symbol_table=symbol_table)
+            # Check if we got a real provider or NoOp fallback
+            from pyladr.ml.embedding_provider import NoOpEmbeddingProvider
+            if isinstance(base_provider, NoOpEmbeddingProvider):
+                print("% ML: using NoOp embedding provider (torch not available)")
+                if not opts.goal_directed:
+                    return None
+            else:
+                print("% ML: GNN embedding provider initialized")
+        except ImportError:
+            from pyladr.ml.embedding_provider import NoOpEmbeddingProvider
+            base_provider = NoOpEmbeddingProvider()
+            print("% ML: using NoOp embedding provider (ML modules not available)")
+            if not opts.goal_directed:  # Only warn if ML actually requested
+                return None
+
+        provider = base_provider
+
+        # Wrap with goal-directed features if enabled
+        if opts.goal_directed:
+            gd_config = GoalDirectedConfig(
+                enabled=True,
+                goal_proximity_weight=opts.goal_proximity_weight,
+                proximity_method="max",
+                online_learning=opts.online_learning,
+            )
+            provider = GoalDirectedEmbeddingProvider(
+                base_provider=provider,
+                config=gd_config,
+            )
+
+        # Create ML selection config
+        ml_config = MLSelectionConfig(
+            enabled=True,
+            ml_weight=opts.ml_weight or 0.3,
+        )
+
+        return EmbeddingEnhancedSelection(
+            embedding_provider=provider,
+            ml_config=ml_config,
+        )
+
+    except Exception as e:
+        import logging
+        logging.warning(f"ML selection setup failed: {e}, using traditional selection")
+        return None
+
+
+def _extract_goals_from_sos(sos: list[Clause]) -> list[Clause]:
+    """Extract goal clauses from SOS (identify DENY justifications)."""
+    goals = []
+    for clause in sos:
+        if (clause.justification and
+            len(clause.justification) > 0 and
+            clause.justification[0].just_type == JustType.DENY):
+            goals.append(clause)
+    return goals
+
+
+# ── Offline Tree2Vec training ─────────────────────────────────────────────
+
+
+def _run_corpus_search(
+    input_file: str,
+    max_given: int,
+) -> tuple[list, object] | None:
+    """Run a proof search to generate training clauses and return (clauses, symbol_table).
+
+    Uses the same search parameters as a normal proof search (weight_ratio=4,
+    auto-detected inference rules) so that the clause distribution matches what
+    the model will encounter at inference time.  Only kept clauses (usable +
+    remaining SOS) are collected — mirroring what online learning trains on.
+    Disabled (back-subsumed) clauses are excluded because they are redundant and
+    would not appear in an online-learning update.
+
+    Returns None on any error.
+    """
+    try:
+        from pathlib import Path as _Path
+        from pyladr.core.symbol import SymbolTable
+        from pyladr.parsing.ladr_parser import LADRParser, ParseError
+        from pyladr.search.given_clause import GivenClauseSearch, SearchOptions
+
+        text = _Path(input_file).read_text()
+        symbol_table = SymbolTable()
+        parser = LADRParser(symbol_table)
+        parsed = parser.parse_input(text)
+
+        usable, sos, _ = _deny_goals(parsed, symbol_table)
+
+        # Match the default proof-search parameters so that the clause
+        # distribution seen during training matches what the model will encounter:
+        # weight_ratio=4  → same 4:1 weight/age default as proof search
+        # max_weight=100  → standard auto-limits cap
+        # max_proofs=-1   → don't stop at first proof; collect more clauses
+        opts = SearchOptions(
+            binary_resolution=True,
+            factoring=True,
+            max_given=max_given,
+            max_proofs=-1,
+            weight_ratio=4,
+            max_weight=100.0,
+            print_given=False,
+            quiet=True,
+        )
+
+        # Auto-detect paramodulation / hyper-resolution from input
+        _auto_inference(parsed, opts)
+        _auto_limits(parsed, opts)
+
+        engine = GivenClauseSearch(
+            options=opts,
+            symbol_table=symbol_table,
+        )
+        num_goals = len(parsed.goals)
+        if num_goals > 0:
+            engine._state.reserve_clause_ids(num_goals)
+
+        import io as _io
+        _null = _io.StringIO()
+        _real_stdout = sys.stdout
+        sys.stdout = _null
+        try:
+            engine.run(usable=usable, sos=sos)
+        finally:
+            sys.stdout = _real_stdout
+
+        stats = engine._state.stats
+        n_usable = engine._state.usable.length
+        n_sos = engine._state.sos.length
+        print(
+            f"%   search finished: {stats.given} given clauses processed, "
+            f"{stats.generated} generated, {stats.kept} kept"
+        )
+        print(
+            f"%   clause breakdown: {n_usable} usable + {n_sos} remaining SOS "
+            f"= {n_usable + n_sos} total (back-subsumed excluded)"
+        )
+
+        # Collect kept clauses only: usable (given) + remaining SOS.
+        # Mirrors online learning, which trains on recently kept clauses.
+        # Disabled (back-subsumed) clauses are excluded — they are redundant
+        # and would not appear in an online-learning batch.
+        clauses: list = list(engine._state.usable) + list(engine._state.sos)
+        return clauses, symbol_table
+
+    except Exception as e:
+        print(f"% Warning: corpus search failed ({e}); falling back to initial clauses.",
+              file=sys.stderr)
+        return None
+
+
+def _train_tree2vec_corpus(
+    input_file: str,
+    output_path: str,
+    corpus_search: bool = False,
+    corpus_given: int = 500,
+) -> int:
+    """Train Tree2Vec on a LADR .in file and save model to output_path.
+
+    When corpus_search is True, runs a diversity-oriented proof search first
+    to generate a richer clause set for training.
+
+    Returns 0 on success, 1 on error.
+    """
+    try:
+        import time
+        from pyladr.ml.tree2vec.formula_processor import (
+            process_vampire_corpus,
+            process_vampire_file,
+        )
+        from pyladr.ml.tree2vec.algorithm import Tree2Vec
+        from pyladr.ml.tree2vec.vampire_parser import VampireCorpus
+
+        t_start = time.time()
+        mode = "search-expanded corpus" if corpus_search else "initial clauses"
+        print(f"% Tree2Vec offline training")
+        print(f"% Input:  {input_file}")
+        print(f"% Output: {output_path}")
+        print(f"% Mode:   {mode}")
+        print(f"% ---")
+
+        if corpus_search:
+            print(f"% [1/3] Running corpus-generation search (max_given={corpus_given})…")
+            search_result = _run_corpus_search(input_file, corpus_given)
+            if search_result is not None:
+                search_clauses, symbol_table = search_result
+
+                corpus = VampireCorpus(
+                    sos_clauses=tuple(search_clauses),
+                    goal_clauses=(),
+                    all_terms=(),
+                    all_subterms=(),
+                    symbol_table=symbol_table,
+                )
+
+                t_aug = time.time()
+                print(f"% [2/3] Augmenting corpus…")
+                # Collect augmentation stats before training by running
+                # process_vampire_corpus with a no-op to get corpus_stats,
+                # then re-use the result for actual training below.
+                result = process_vampire_corpus(
+                    corpus,
+                    progress_fn=_make_epoch_progress_fn(t_start),
+                )
+            else:
+                print(f"% Search failed; falling back to initial clauses.")
+                print(f"% [2/3] Augmenting corpus…")
+                result = process_vampire_file(
+                    input_file,
+                    progress_fn=_make_epoch_progress_fn(t_start),
+                )
+        else:
+            print(f"% [1/3] Parsing input…")
+            from pyladr.ml.tree2vec.vampire_parser import parse_vampire_file as _pvf
+            corpus = _pvf(input_file)
+            print(
+                f"%   {len(corpus.sos_clauses)} SOS clause(s), "
+                f"{len(corpus.goal_clauses)} goal clause(s), "
+                f"{corpus.num_unique_subterms} unique subterms"
+            )
+            print(f"% [2/3] Augmenting corpus…")
+            result = process_vampire_corpus(
+                corpus,
+                progress_fn=_make_epoch_progress_fn(t_start),
+            )
+
+        cs = result.corpus_stats
+        print(
+            f"%   source clauses:   {cs['original_clauses']}\n"
+            f"%   renamed variants: {cs['renamed_variants']}\n"
+            f"%   reversed variants:{cs['reversed_variants']}\n"
+            f"%   subterm trees:    {cs.get('subterm_trees', 0)}\n"
+            f"%   total walks from: {cs['total_training_clauses']} clauses"
+        )
+
+        ts = result.training_stats
+        print(
+            f"% [3/3] Training complete\n"
+            f"%   vocabulary:   {ts['vocab_size']} tokens\n"
+            f"%   pairs trained:{ts['total_pairs']}\n"
+            f"%   epochs:       {ts['epochs']}\n"
+            f"%   final loss:   {ts['loss']:.4f}"
+        )
+
+        epoch_losses = ts.get("epoch_losses", [])
+        if len(epoch_losses) > 1:
+            first, last = epoch_losses[0], epoch_losses[-1]
+            if first > 0:
+                improvement = (first - last) / first * 100
+                print(f"%   loss improved: {first:.4f} → {last:.4f} ({improvement:.1f}%)")
+
+        tree2vec: Tree2Vec = result.tree2vec
+        tree2vec.save(output_path)
+        elapsed = time.time() - t_start
+        print(f"% ---")
+        print(f"% Model saved to: {output_path}  (dim={tree2vec.embedding_dim}, elapsed={elapsed:.1f}s)")
+        return 0
+    except Exception as e:
+        print(f"Fatal error training Tree2Vec: {e}", file=sys.stderr)
+        return 1
+
+
+def _make_epoch_progress_fn(t_start: float):
+    """Return a progress callback that prints per-epoch training stats."""
+    import time
+
+    def _progress(epoch: int, num_epochs: int, epoch_loss: float, lr: float) -> None:
+        elapsed = time.time() - t_start
+        bar_width = 20
+        filled = int(bar_width * epoch / num_epochs)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        print(
+            f"%   epoch {epoch:>{len(str(num_epochs))}}/{num_epochs} "
+            f"[{bar}] loss={epoch_loss:.4f}  lr={lr:.5f}  {elapsed:.1f}s"
+        )
+
+    return _progress
+
+
 # ── Main entry point ──────────────────────────────────────────────────────
 
 
@@ -508,13 +1792,25 @@ def run_prover(argv: list[str] | None = None) -> int:
     Returns:
         Process exit code (0 = proof found, 2 = SOS empty, etc.)
     """
+    _configure_runtime()
     if argv is None:
         argv = sys.argv
 
     arg_parser = _build_arg_parser()
 
-    # Parse known args (ignore unrecognized for forward compatibility)
-    args, _unknown = arg_parser.parse_known_args(argv[1:])
+    args = arg_parser.parse_args(argv[1:])
+
+    # Offline training mode: train and save, then exit
+    if args.tree2vec_train_corpus is not None:
+        output_path = args.tree2vec_train_corpus + ".t2v.json"
+        return _train_tree2vec_corpus(
+            args.tree2vec_train_corpus,
+            output_path,
+            corpus_search=args.tree2vec_corpus_search,
+            corpus_given=args.tree2vec_corpus_given,
+        )
+
+    _configure_cpp_backend(args.use_cpp)
 
     out: TextIO = sys.stdout
 
@@ -544,6 +1840,16 @@ def run_prover(argv: list[str] | None = None) -> int:
     handler.setLevel(logging.INFO)
     logger.addHandler(handler)
     logger.propagate = False
+
+    # Configure logger for ML selection (visible when ML is active)
+    ml_logger = logging.getLogger('pyladr.search.ml_selection')
+    ml_logger.setLevel(logging.INFO)
+    for h in ml_logger.handlers[:]:
+        ml_logger.removeHandler(h)
+    ml_handler = StdoutHandler()
+    ml_handler.setLevel(logging.INFO)
+    ml_logger.addHandler(ml_handler)
+    ml_logger.propagate = False
 
     # ── Read input ──────────────────────────────────────────────────────
 
@@ -578,7 +1884,7 @@ def run_prover(argv: list[str] | None = None) -> int:
 
     # ── Deny goals ──────────────────────────────────────────────────────
 
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, denied_clauses = _deny_goals(parsed, symbol_table)
 
     if not sos and not usable:
         print("Fatal error: no clauses in input", file=sys.stderr)
@@ -597,45 +1903,213 @@ def run_prover(argv: list[str] | None = None) -> int:
         max_seconds=args.max_seconds,
         max_generated=args.max_generated,
         max_proofs=args.max_proofs,
+        max_weight=args.max_weight,
+        max_weight_tighten_after=args.max_weight_tighten_after,
+        max_weight_tighten_to=args.max_weight_tighten_to,
+        weight_ratio=args.weight_ratio,
+        entropy_weight=args.entropy_weight,
+        unification_weight=args.unification_weight,
+        penalty_propagation=args.penalty_propagation,
+        penalty_propagation_mode=args.penalty_propagation_mode,
+        penalty_propagation_decay=args.penalty_propagation_decay,
+        penalty_propagation_threshold=args.penalty_propagation_threshold,
+        repetition_penalty=args.repetition_penalty,
+        repetition_penalty_weight=args.repetition_penalty_weight,
+        repetition_penalty_min_size=args.repetition_penalty_min_size,
+        repetition_penalty_max=args.repetition_penalty_max,
+        repetition_penalty_normalize=args.repetition_penalty_normalize,
+        nucleus_unification_penalty=args.nucleus_unification_penalty,
+        nucleus_penalty_threshold=args.nucleus_penalty_threshold,
+        nucleus_penalty_weight=args.nucleus_penalty_weight,
+        nucleus_penalty_max=args.nucleus_penalty_max,
+        nucleus_penalty_cache_size=args.nucleus_penalty_cache_size,
+        penalty_weight_enabled=args.penalty_weight,
+        penalty_weight_threshold=args.penalty_weight_threshold,
+        penalty_weight_multiplier=args.penalty_weight_multiplier,
+        penalty_weight_max=args.penalty_weight_max,
+        penalty_weight_mode=args.penalty_weight_mode,
         print_given=not args.no_print_given,
         print_kept=args.print_kept,
+        print_given_stats=args.print_given_stats,
         quiet=args.quiet,
+        online_learning=args.online_learning,
+        ml_weight=args.ml_weight,
+        embedding_dim=args.embedding_dim,
+        goal_directed=args.goal_directed,
+        goal_proximity_weight=args.goal_proximity_weight,
+        embedding_evolution_rate=args.embedding_evolution_rate,
+        learn_from_back_subsumption=args.learn_from_back_subsumption,
+        learn_from_forward_subsumption=args.learn_from_forward_subsumption,
+        forte_embeddings=args.forte_embeddings,
+        forte_weight=args.forte_weight if args.forte_weight > 0 else (1.0 if args.forte_embeddings else 0.0),
+        forte_embedding_dim=args.forte_dim,
+        forte_cache_max_entries=args.forte_cache,
+        proof_guided=args.proof_guided,
+        proof_guided_weight=args.proof_guided_weight if args.proof_guided_weight > 0 else (2.0 if args.proof_guided else 0.0),
+        proof_guided_exploitation_ratio=args.proof_guided_exploitation,
+        proof_guided_decay_rate=args.proof_guided_decay,
+        proof_guided_max_patterns=args.proof_guided_max_patterns,
+        tree2vec_embeddings=args.tree2vec_embeddings or (args.tree2vec_load_model is not None),
+        tree2vec_weight=args.tree2vec_weight if args.tree2vec_weight > 0 else (1.0 if (args.tree2vec_embeddings or args.tree2vec_load_model) else 0.0),
+        tree2vec_maximin_weight=args.tree2vec_maximin_weight,
+        tree2vec_embedding_dim=args.tree2vec_dim,
+        tree2vec_cache_max_entries=args.tree2vec_cache,
+        tree2vec_include_position=args.tree2vec_position,
+        tree2vec_include_depth=args.tree2vec_depth,
+        tree2vec_include_var_identity=args.tree2vec_var_identity,
+        tree2vec_skip_predicate=args.tree2vec_skip_predicate,
+        tree2vec_include_path_length=args.tree2vec_path_length,
+        tree2vec_composition=args.tree2vec_composition,
+        tree2vec_online_learning=args.tree2vec_online_learning,
+        tree2vec_bg_update=args.tree2vec_bg_update,
+        tree2vec_dump_embeddings=args.tree2vec_dump_embeddings,
+        tree2vec_online_update_interval=args.tree2vec_online_interval,
+        tree2vec_online_batch_size=args.tree2vec_online_batch_size,
+        tree2vec_online_lr=args.tree2vec_online_lr,
+        tree2vec_online_max_updates=args.tree2vec_online_max_updates,
+        tree2vec_goal_proximity=args.tree2vec_goal_proximity,
+        tree2vec_goal_proximity_weight=args.tree2vec_goal_proximity_weight,
+        tree2vec_cross_arg_proximity=args.tree2vec_cross_arg_proximity,
+        tree2vec_model_path=args.tree2vec_load_model or "",
+        rnn2vec_embeddings=args.rnn2vec_embeddings or (args.rnn2vec_load_model is not None),
+        rnn2vec_weight=args.rnn2vec_weight if args.rnn2vec_weight > 0 else (1.0 if (args.rnn2vec_embeddings or args.rnn2vec_load_model) else 0.0),
+        rnn2vec_rnn_type=args.rnn2vec_rnn_type,
+        rnn2vec_hidden_dim=args.rnn2vec_hidden_dim,
+        rnn2vec_embedding_dim=args.rnn2vec_dim,
+        rnn2vec_input_dim=args.rnn2vec_input_dim,
+        rnn2vec_cache_max_entries=args.rnn2vec_cache,
+        rnn2vec_composition=args.rnn2vec_composition,
+        rnn2vec_online_learning=args.rnn2vec_online_learning,
+        rnn2vec_online_update_interval=args.rnn2vec_online_interval,
+        rnn2vec_online_batch_size=args.rnn2vec_online_batch_size,
+        rnn2vec_online_lr=args.rnn2vec_online_lr,
+        rnn2vec_online_max_updates=args.rnn2vec_online_max_updates,
+        rnn2vec_training_epochs=args.rnn2vec_training_epochs,
+        rnn2vec_training_lr=args.rnn2vec_training_lr,
+        rnn2vec_model_path=args.rnn2vec_load_model or "",
+        rnn2vec_save_model=args.rnn2vec_save_model,
+        rnn2vec_goal_proximity=args.rnn2vec_goal_proximity,
+        rnn2vec_goal_proximity_weight=args.rnn2vec_goal_proximity_weight,
+        rnn2vec_random_goal_weight=args.rnn2vec_random_goal_weight,
+        rnn2vec_dump_embeddings=args.rnn2vec_dump_embeddings,
     )
 
-    # Apply parsed assign() directives (LADR input overrides CLI defaults)
-    if "max_proofs" in parsed.assigns:
-        opts.max_proofs = int(parsed.assigns["max_proofs"])
-    if "max_given" in parsed.assigns:
-        opts.max_given = int(parsed.assigns["max_given"])
-    if "max_kept" in parsed.assigns:
-        opts.max_kept = int(parsed.assigns["max_kept"])
-    if "max_seconds" in parsed.assigns:
-        opts.max_seconds = float(parsed.assigns["max_seconds"])
-    if "max_generated" in parsed.assigns:
-        opts.max_generated = int(parsed.assigns["max_generated"])
-    if "max_weight" in parsed.assigns:
-        opts.max_weight = float(parsed.assigns["max_weight"])
-    if "sos_limit" in parsed.assigns:
-        opts.sos_limit = int(parsed.assigns["sos_limit"])
+    _apply_settings(parsed, opts)
 
-    # Apply parsed set()/clear() flags
-    if parsed.flags.get("print_given", False):
-        opts.print_given = True
+    # Validate penalty weight parameters
+    if opts.penalty_weight_enabled:
+        if opts.penalty_weight_multiplier < 1.0:
+            print(
+                "Fatal error: penalty_weight_multiplier must be >= 1.0"
+                f" (got {opts.penalty_weight_multiplier})",
+                file=sys.stderr,
+            )
+            return 1
+        if opts.penalty_weight_threshold <= 0.0:
+            print(
+                "Fatal error: penalty_weight_threshold must be > 0.0"
+                f" (got {opts.penalty_weight_threshold})",
+                file=sys.stderr,
+            )
+            return 1
+        if opts.penalty_weight_max <= 0.0:
+            print(
+                "Fatal error: penalty_weight_max must be > 0.0"
+                f" (got {opts.penalty_weight_max})",
+                file=sys.stderr,
+            )
+            return 1
+        if opts.penalty_weight_mode not in ("linear", "exponential", "step"):
+            print(
+                "Fatal error: penalty_weight_mode must be linear, exponential, or step"
+                f" (got '{opts.penalty_weight_mode}')",
+                file=sys.stderr,
+            )
+            return 1
 
-    # Auto-detect inference settings based on input
-    # (auto_limits apply defaults only when not explicitly overridden)
-    _auto_inference(parsed, opts)
+    # Auto-detect inference settings based on input.
+    # C Prover9: set(auto) implies set(auto_inference), set(auto_setup),
+    # set(auto_limits), set(auto_denials), set(auto_process).
+    # Individual sub-flags can be explicitly cleared to disable them,
+    # e.g. set(auto). clear(auto_inference). keeps limits but skips inference.
+    auto_on = parsed.flags.get("auto", False)
+    auto_inference_on = parsed.flags.get("auto_inference", auto_on)
+    auto_limits_on = parsed.flags.get("auto_limits", auto_on)
+    if auto_inference_on:
+        _auto_inference(parsed, opts)
+    if auto_limits_on:
+        _auto_limits(parsed, opts)
 
     # ── Print initial clauses ───────────────────────────────────────────
 
     _print_initial_clauses(usable, sos, symbol_table, out)
 
+    # ── ML Selection Setup ──────────────────────────────────────────────
+
+    selection = None
+    if _should_use_ml_selection(opts):
+        selection = _create_ml_selection(opts, symbol_table)
+        if selection:
+            print("% ML-enhanced clause selection enabled"
+                  f" (ml_weight={selection.ml_config.ml_weight:.2f})")
+        else:
+            print("% ML selection requested but could not be initialized;"
+                  " using traditional selection")
+
     # ── Run search ──────────────────────────────────────────────────────
 
     engine = GivenClauseSearch(
         options=opts,
+        selection=selection,  # Pass custom selection (None = default)
         symbol_table=symbol_table,
+        hints=parsed.hints if parsed.hints else None,
     )
+
+    # ── Reserve clause IDs for goal formulas (C Prover9 compatibility) ──
+    # C Prover9 assigns IDs 1..N to goal formulas before clausification,
+    # so the first kept clause gets ID (N+1). Match this behavior.
+    num_goals = len(parsed.goals)
+    if num_goals > 0:
+        engine._state.reserve_clause_ids(num_goals)
+
+    # ── Register Goals for Goal-Directed Selection ──────────────────────
+
+    if opts.goal_directed and selection:
+        goals = _extract_goals_from_sos(sos)  # Extract DENY justifications
+        if goals and hasattr(selection, 'embedding_provider'):
+            provider = selection.embedding_provider
+            if hasattr(provider, 'register_goals'):
+                provider.register_goals(goals)
+                print(f"% ML: registered {len(goals)} goal(s) for goal-directed selection")
+
+    proven_goal_indices: set[int] = set()
+
+    def _on_proof(proof: Proof, proof_num: int) -> None:
+        _print_proof(
+            proof,
+            proof_num=proof_num,
+            search_seconds=engine.stats.search_seconds(),
+            symbol_table=symbol_table,
+            out=out,
+            entropy_weight=opts.entropy_weight,
+            unification_weight=opts.unification_weight,
+        )
+        if parsed.goals:
+            proof_clause_ids = {c.id for c in proof.clauses}
+            for i, denied in enumerate(denied_clauses):
+                if denied.id in proof_clause_ids:
+                    proven_goal_indices.add(i)
+            unproven = [
+                parsed.goals[i]
+                for i in range(len(parsed.goals))
+                if i not in proven_goal_indices
+            ]
+            if unproven:
+                print(f"% Unproven goal formulas ({len(unproven)} of {len(parsed.goals)}):", file=out)
+                for g in unproven:
+                    print(f"%   {format_clause_standard(g, symbol_table)}", file=out)
+
+    engine.set_proof_callback(_on_proof)
 
     try:
         result = engine.run(usable=usable, sos=sos)
@@ -643,20 +2117,11 @@ def run_prover(argv: list[str] | None = None) -> int:
         print(f"\nFatal error during search: {e}", file=sys.stderr)
         return 1
 
-    # ── Print proofs ────────────────────────────────────────────────────
-
-    for i, proof in enumerate(result.proofs, 1):
-        _print_proof(
-            proof,
-            proof_num=i,
-            search_seconds=result.stats.search_seconds(),
-            symbol_table=symbol_table,
-            out=out,
-        )
-
     # ── Print statistics and conclusion ─────────────────────────────────
 
-    _print_statistics(result, out)
+    ml_stats = selection.ml_stats if selection and hasattr(selection, 'ml_stats') else None
+    _print_statistics(result, out, print_given_stats=opts.print_given_stats,
+                      ml_selection_stats=ml_stats)
     _print_conclusion(result, out)
 
     return _PROCESS_EXIT_CODES.get(result.exit_code, 1)

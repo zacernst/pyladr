@@ -20,9 +20,17 @@ from pyladr.core.clause import Clause, Literal
 from pyladr.core.symbol import SymbolTable
 from pyladr.core.term import Term
 from pyladr.parsing.ladr_parser import LADRParser, ParseError
+import logging
+import sys
 
+_logger = logging.getLogger(__name__)
 
 VERSION_DATE = f"PyLADR {__version__}"
+
+
+def _configure_runtime() -> None:
+    """Configure runtime settings. Call from CLI entry points."""
+    sys.setrecursionlimit(5000)
 
 
 def make_base_parser(program_name: str, description: str) -> argparse.ArgumentParser:
@@ -47,10 +55,16 @@ def make_base_parser(program_name: str, description: str) -> argparse.ArgumentPa
 
 
 def open_input(args: argparse.Namespace) -> IO[str]:
-    """Open the input file or return stdin."""
+    """Open the input file or return stdin.
+
+    Note: caller is responsible for closing the returned file handle
+    when it is not stdin. Consider using the returned handle in a
+    ``with`` block or wrapping with contextlib.closing().
+    """
     if hasattr(args, "input_file") and args.input_file:
         try:
-            return open(args.input_file)  # noqa: SIM115
+            fh = open(args.input_file)  # noqa: SIM115
+            return fh
         except FileNotFoundError:
             fatal_error(f"file {args.input_file} not found")
     return sys.stdin
@@ -71,6 +85,7 @@ def read_clause_stream(
     Matches C read_clause() loop pattern used by most apps:
     reads clauses separated by periods, stops at end_of_list or EOF.
     """
+    _configure_runtime()
     parser = LADRParser(symbol_table)
     text = input_stream.read()
     clauses: list[Clause] = []
@@ -85,15 +100,16 @@ def read_clause_stream(
     else:
         # Bare clause stream: split on periods
         statements = text.replace("\n", " ").split(".")
-        for stmt in statements:
+        for line_num, stmt in enumerate(statements, 1):
             stmt = stmt.strip()
             if not stmt or stmt.startswith("%") or stmt == "end_of_list":
                 continue
             try:
                 clause = parser.parse_clause_from_string(stmt)
                 clauses.append(clause)
-            except ParseError:
-                continue  # skip unparseable lines
+            except ParseError as e:
+                _logger.warning("Skipping unparseable statement at position %d: %r (%s)", line_num, stmt, e)
+                continue
 
     return clauses
 

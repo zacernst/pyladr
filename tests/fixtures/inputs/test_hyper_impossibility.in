@@ -1,0 +1,23 @@
+% Test case designed to reproduce the hyper-resolution partnership estimation bug
+% This should generate many inferences but with very few actual partnerships
+set(print_given_stats).
+set(hyper_resolution).
+clear(binary_resolution).
+assign(max_given, 50).
+
+formulas(sos).
+  % Many unit clauses of the same predicate - should all be available for hyper-resolution
+  P(a1). P(a2). P(a3). P(a4). P(a5). P(a6). P(a7). P(a8). P(a9). P(a10).
+  P(b1). P(b2). P(b3). P(b4). P(b5). P(b6). P(b7). P(b8). P(b9). P(b10).
+  P(c1). P(c2). P(c3). P(c4). P(c5). P(c6). P(c7). P(c8). P(c9). P(c10).
+  Q(x1). Q(x2). Q(x3). Q(x4). Q(x5). Q(x6). Q(x7). Q(x8). Q(x9). Q(x10).
+
+  % This clause should trigger hyper-resolution with many P clauses,
+  % but the partnership estimation bug will overcount
+  -P(x) | -P(y) | -Q(z) | R(x,y,z).
+
+  % Some additional clauses to increase the usable_snapshot size
+  S(d1). S(d2). S(d3). S(d4). S(d5).
+  T(e1). T(e2). T(e3). T(e4). T(e5).
+  U(f1). U(f2). U(f3). U(f4). U(f5).
+end_of_list.

@@ -1,0 +1,9 @@
+% Test complex Skolemization with mixed variables and constants
+formulas(sos).
+  P(a,b).
+  P(x,y) -> Q(x,y,z).
+end_of_list.
+
+formulas(goals).
+  Q(u,v,f(w,c)) | R(w,a).  % Complex goal with multiple variables and function
+end_of_list.

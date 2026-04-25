@@ -1,0 +1,20 @@
+assign(max_given, 5).
+set(print_given).
+clear(auto_inference).
+clear(auto_setup).
+clear(auto_process).
+set(binary_resolution).
+
+formulas(sos).
+P(f(a)).
+P(f(b)).
+P(f(c)).
+-P(x) | -P(y) | Q(x,y).
+-Q(f(x),f(y)) | R(x,y).
+-R(a,b) | S(a).
+-R(b,c) | S(b).
+end_of_list.
+
+formulas(goals).
+S(a).
+end_of_list.

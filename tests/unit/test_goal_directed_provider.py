@@ -264,10 +264,10 @@ class TestGoalRegistration:
 # ── Goal proximity scoring tests ─────────────────────────────────────────────
 
 
-class TestGoalProximityScoring:
-    """Test goal proximity distance computation."""
+class TestGoalDistanceScoring:
+    """Test goal distance computation."""
 
-    def test_identical_to_goal_has_max_proximity(self) -> None:
+    def test_identical_to_goal_has_zero_distance(self) -> None:
         base = MockEmbeddingProvider(
             embeddings={
                 1: [1.0, 0.0, 0.0, 0.0],
@@ -285,10 +285,9 @@ class TestGoalProximityScoring:
         scorer = provider.goal_scorer
         c = _make_weighted_clause(1.0, cid=1)
         emb = base.get_embedding(c)
-        proximity = scorer.proximity(emb)
-        assert proximity == pytest.approx(1.0)
+        assert scorer.nearest_goal_distance(emb) == pytest.approx(0.0)
 
-    def test_orthogonal_to_goal_has_low_proximity(self) -> None:
+    def test_orthogonal_to_goal_has_neutral_distance(self) -> None:
         base = MockEmbeddingProvider(
             embeddings={
                 1: [0.0, 0.0, 1.0, 0.0],  # orthogonal to goal
@@ -306,10 +305,9 @@ class TestGoalProximityScoring:
         scorer = provider.goal_scorer
         c = _make_weighted_clause(1.0, cid=1)
         emb = base.get_embedding(c)
-        proximity = scorer.proximity(emb)
-        assert proximity == pytest.approx(0.5)  # neutral for orthogonal
+        assert scorer.nearest_goal_distance(emb) == pytest.approx(0.5)  # neutral for orthogonal
 
-    def test_opposite_to_goal_has_min_proximity(self) -> None:
+    def test_opposite_to_goal_has_max_distance(self) -> None:
         base = MockEmbeddingProvider(
             embeddings={
                 1: [-1.0, 0.0, 0.0, 0.0],  # opposite of goal
@@ -327,16 +325,15 @@ class TestGoalProximityScoring:
         scorer = provider.goal_scorer
         c = _make_weighted_clause(1.0, cid=1)
         emb = base.get_embedding(c)
-        proximity = scorer.proximity(emb)
-        assert proximity == pytest.approx(0.0)
+        assert scorer.nearest_goal_distance(emb) == pytest.approx(1.0)
 
-    def test_proximity_with_multiple_goals_uses_max(self) -> None:
-        """Proximity is max similarity to any goal (closest goal matters)."""
+    def test_nearest_goal_distance_uses_closest_goal(self) -> None:
+        """nearest_goal_distance uses the closest goal (smallest distance)."""
         base = MockEmbeddingProvider(
             embeddings={
                 1: [0.0, 1.0, 0.0, 0.0],
                 10: [1.0, 0.0, 0.0, 0.0],  # goal A - far
-                11: [0.0, 1.0, 0.0, 0.0],  # goal B - close
+                11: [0.0, 1.0, 0.0, 0.0],  # goal B - identical
             },
             dim=4,
         )
@@ -350,19 +347,17 @@ class TestGoalProximityScoring:
 
         scorer = provider.goal_scorer
         emb = base.get_embedding(_make_weighted_clause(1.0, cid=1))
-        proximity = scorer.proximity(emb)
-        # Should be close to 1.0 because of goal B
-        assert proximity == pytest.approx(1.0)
+        # Should be 0.0 because of goal B (identical)
+        assert scorer.nearest_goal_distance(emb) == pytest.approx(0.0)
 
     def test_no_goals_returns_neutral(self) -> None:
-        """Without registered goals, proximity is 0.5 (neutral)."""
+        """Without registered goals, distance is 0.5 (neutral)."""
         base = MockEmbeddingProvider(
             embeddings={1: [1.0, 0.0, 0.0, 0.0]}, dim=4,
         )
         provider = GoalDirectedEmbeddingProvider(base_provider=base)
         scorer = provider.goal_scorer
-        proximity = scorer.proximity([1.0, 0.0, 0.0, 0.0])
-        assert proximity == pytest.approx(0.5)
+        assert scorer.nearest_goal_distance([1.0, 0.0, 0.0, 0.0]) == pytest.approx(0.5)
 
 
 # ── Goal-enhanced embedding tests ────────────────────────────────────────────
@@ -396,17 +391,19 @@ class TestGoalEnhancedEmbeddings:
         # Should differ from base embedding due to goal proximity modulation
         assert result != base_emb
 
-    def test_goal_proximity_boosts_close_clauses(self) -> None:
-        """Clauses close to goals should get smaller norms (higher proof potential).
+    def test_goal_distance_modulates_norms(self) -> None:
+        """Clauses close to the goal (small distance) should get smaller norms.
 
+        Goal embeddings are stored sign-stripped, so small distance means
+        structurally similar to goal content = proof-useful.
         The proof_potential_score in ml_selection.py rewards smaller norms
-        (inverse sigmoid). Goal-proximate clauses get scaled down → smaller
-        norm → higher proof potential score.
+        (inverse sigmoid). Goal-close clauses get scaled down
+        → smaller norm → higher proof potential score.
         """
         base = MockEmbeddingProvider(
             embeddings={
-                1: [0.9, 0.1, 0.0, 0.0],  # close to goal
-                2: [0.0, 0.0, 0.9, 0.1],  # far from goal
+                1: [0.9, 0.1, 0.0, 0.0],  # close to goal → proof-useful
+                2: [0.0, 0.0, 0.9, 0.1],  # far from goal → less useful
                 10: [1.0, 0.0, 0.0, 0.0],  # goal
             },
             dim=4,
@@ -428,8 +425,8 @@ class TestGoalEnhancedEmbeddings:
         assert emb_close is not None
         assert emb_far is not None
 
-        # Close clause should have SMALLER norm (more scaled down by proximity)
-        # → higher proof_potential_score in ml_selection.py
+        # Clause close to goal has small distance → more scaled down
+        # → smaller norm → higher proof_potential_score in ml_selection.py
         norm_close = math.sqrt(sum(x * x for x in emb_close))
         norm_far = math.sqrt(sum(x * x for x in emb_far))
         assert norm_close < norm_far
@@ -675,13 +672,13 @@ class TestSelectionIntegration:
             ml_config=ml_config,
         )
 
-        c1 = _make_weighted_clause(1.0, cid=1)  # close to goal
-        c2 = _make_weighted_clause(1.0, cid=2)  # far from goal
+        c1 = _make_weighted_clause(1.0, cid=1)  # close to goal → proof-useful
+        c2 = _make_weighted_clause(1.0, cid=2)  # far from goal → less useful
         sos = _make_sos([c1, c2])
 
         c, name = sel.select_given(sos, 0)
         assert c is not None
-        # With goal proximity and proof potential scoring, c1 should be preferred
+        # c1 is close to the goal → small distance → smaller norm → higher proof potential
         assert c is c1
         assert "+ML" in name
 

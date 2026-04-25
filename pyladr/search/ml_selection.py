@@ -14,9 +14,10 @@ import math
 import sys
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from pyladr.core.clause import Clause
+from pyladr.protocols import EmbeddingProvider
 from pyladr.search.selection import (
     GivenSelection,
     SelectionOrder,
@@ -33,33 +34,10 @@ logger = logging.getLogger(__name__)
 
 # ── Embedding provider protocol ─────────────────────────────────────────────
 
-
-@runtime_checkable
-class EmbeddingProvider(Protocol):
-    """Protocol for clause embedding providers.
-
-    Implementations supply fixed-dimensional vector embeddings for clauses.
-    The provider is responsible for caching and batching internally.
-    """
-
-    @property
-    def embedding_dim(self) -> int:
-        """Dimensionality of produced embeddings."""
-        ...
-
-    def get_embedding(self, clause: Clause) -> list[float] | None:
-        """Return embedding vector for a clause, or None if unavailable.
-
-        Implementations should handle their own caching. Returning None
-        signals that the caller should fall back to traditional scoring.
-        """
-        ...
-
-    def get_embeddings_batch(
-        self, clauses: list[Clause],
-    ) -> list[list[float] | None]:
-        """Batch embedding retrieval. Default loops over get_embedding."""
-        ...
+# Re-exported from pyladr.protocols for backward compatibility.
+# All existing ``from pyladr.search.ml_selection import EmbeddingProvider``
+# imports continue to work. New code should import from pyladr.protocols.
+__all__ = ["EmbeddingProvider"]  # noqa: F811 — re-export
 
 
 # ── Selection configuration ─────────────────────────────────────────────────
@@ -325,10 +303,13 @@ class EmbeddingEnhancedSelection(GivenSelection):
                 # ML score with weight exploration that increases with ml_weight
                 raw_ml_score = self._compute_ml_score(emb, clause.weight, ml_weight)
 
-                # Scale ML score to match traditional score range
+                # Scale [0,1] ML scores to roughly match traditional weight-based
+                # score range (~0-10)
                 ml_score = raw_ml_score * 10.0
 
-                # Complexity normalization: penalize structurally complex clauses
+                # Divide by sqrt(complexity) to avoid penalizing complex-but-promising
+                # clauses too heavily; superlinear depth penalty in complexity already
+                # handles pathological cases
                 if use_complexity_norm:
                     complexity = _clause_complexity(clause)
                     ml_score = ml_score / math.sqrt(complexity)

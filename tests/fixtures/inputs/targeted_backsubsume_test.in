@@ -1,0 +1,26 @@
+% Test designed to trigger back-subsumption
+% Start with a specific fact, then generate more general clauses
+
+formulas(usable).
+  % Start with a very specific clause that should get back-subsumed
+  P(a,b,c,d,e).
+end_of_list.
+
+formulas(sos).
+  % Rules that should generate increasingly general clauses
+  P(x,y,z,w,v) -> Q(x,y,z,w,v).
+  P(a,b,c,d,e) -> R(a,b,c,d,e).
+
+  % Generate a more general clause P(a,b,c,d,x) which should back-subsume P(a,b,c,d,e)
+  R(a,b,c,d,e) -> P(a,b,c,d,x).
+
+  % Even more general: P(a,b,c,x,y)
+  P(a,b,c,d,x) -> P(a,b,c,x,y).
+
+  % Most general: P(a,x,y,z,w)
+  P(a,b,c,x,y) -> P(a,x,y,z,w).
+end_of_list.
+
+formulas(goals).
+  P(a,f,g,h,i).  % Should be provable from the most general form
+end_of_list.

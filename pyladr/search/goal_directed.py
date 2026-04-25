@@ -1,9 +1,9 @@
 """Goal-directed embedding provider for proof search.
 
-Wraps any EmbeddingProvider with goal proximity scoring, enabling
+Wraps any EmbeddingProvider with goal-distance scoring, enabling
 goal-directed clause selection. When a proof goal (negated conjecture)
-is registered, clause embeddings are modulated by their proximity to
-the goal in embedding space.
+is registered, clause embeddings are modulated by their cosine distance
+to the goal in embedding space.
 
 All goal-directed features are strictly opt-in. When disabled, the
 provider is an exact passthrough to the base provider — zero overhead,
@@ -29,7 +29,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from pyladr.core.clause import Clause
+from pyladr.core.clause import Clause, Literal
+from pyladr.core.term import Term, get_variable_term
 
 if TYPE_CHECKING:
     from pyladr.search.ml_selection import EmbeddingProvider
@@ -46,39 +47,86 @@ class GoalDirectedConfig:
 
     Attributes:
         enabled: Master switch. When False, provider is pure passthrough.
-        goal_proximity_weight: How much goal proximity influences the
+        goal_proximity_weight: How much goal distance influences the
             embedding modulation. 0.0 = no influence, 1.0 = strong.
-        proximity_method: How to combine similarities to multiple goals.
-            "max" = closest goal, "mean" = average over all goals.
+        proximity_method: Unused. Kept for backwards compatibility.
         online_learning: Enable online contrastive learning from feedback.
         feedback_buffer_size: Max feedback pairs to retain for learning.
     """
 
     enabled: bool = False
     goal_proximity_weight: float = 0.3
-    proximity_method: str = "max"
+    proximity_method: str = "max"  # unused; kept for backwards compatibility
     online_learning: bool = False
     feedback_buffer_size: int = 1000
 
 
-# ── Goal proximity scorer ─────────────────────────────────────────────────
+# ── Goal clause normalisation ──────────────────────────────────────────────
 
 
-class GoalProximityScorer:
-    """Computes proximity of clause embeddings to registered goal embeddings.
+def _replace_constants_with_vars(term: Term, const_to_var: dict[int, int]) -> Term:
+    """Recursively replace constants with variables in a term tree.
 
-    Proximity is based on cosine similarity, mapped to [0, 1]:
-        proximity = (cosine_sim + 1) / 2
+    Each distinct constant symnum gets its own fresh variable number,
+    allocated in order of first appearance in ``const_to_var``.
+    """
+    if term.is_variable:
+        return term
+    if term.is_constant:
+        symnum = term.symnum
+        if symnum not in const_to_var:
+            const_to_var[symnum] = len(const_to_var)
+        return get_variable_term(const_to_var[symnum])
+    # Complex term: recurse into args
+    new_args = tuple(_replace_constants_with_vars(a, const_to_var) for a in term.args)
+    if new_args == term.args:
+        return term
+    from pyladr.core.term import get_rigid_term
+    return get_rigid_term(term.symnum, term.arity, new_args)
 
-    With multiple goals, uses max (closest goal) or mean, configurable.
+
+def _deskolemize_clause(clause: Clause) -> Clause:
+    """Return a copy of *clause* with all constants replaced by variables.
+
+    Goal clauses are produced by Skolemizing the negated conjecture, so every
+    constant in them is a Skolem constant.  Replacing them with variables
+    makes the embedding represent pure structural shape (e.g. P(i(x,y)))
+    rather than specific constant identities, giving a more meaningful
+    distance measure for arbitrary derived clauses.
+
+    Signs are also forced to True (caller should already have done this, but
+    we do it here as well for safety).
+    """
+    const_to_var: dict[int, int] = {}
+    new_lits = tuple(
+        Literal(sign=True, atom=_replace_constants_with_vars(lit.atom, const_to_var))
+        for lit in clause.literals
+    )
+    return Clause(literals=new_lits, id=clause.id)
+
+
+# ── Goal distance scorer ───────────────────────────────────────────────────
+
+
+class GoalDistanceScorer:
+    """Computes cosine distance of clause embeddings to registered goal embeddings.
+
+    "Distance" is (1 - cosine_similarity) / 2, mapping to [0, 1]:
+        distance = 0.0  →  identical to goal
+        distance = 0.5  →  orthogonal to goal
+        distance = 1.0  →  maximally dissimilar to goal
+
     With no goals, returns 0.5 (neutral).
+
+    Goals are typically DENY-justified (negated-conjecture) clauses.
+    A large distance from the DENY reference means the clause is close
+    to the actual (un-negated) goal, making it promising for proof search.
     """
 
-    __slots__ = ("_goal_embeddings", "_method", "_lock")
+    __slots__ = ("_goal_embeddings", "_lock")
 
-    def __init__(self, method: str = "max") -> None:
+    def __init__(self) -> None:
         self._goal_embeddings: list[list[float]] = []
-        self._method = method
         self._lock = threading.Lock()
 
     def set_goals(self, goal_embeddings: list[list[float]]) -> None:
@@ -91,17 +139,25 @@ class GoalProximityScorer:
         with self._lock:
             self._goal_embeddings = []
 
+    def remove_goal(self, index: int) -> None:
+        """Remove the goal embedding at the given index."""
+        with self._lock:
+            if 0 <= index < len(self._goal_embeddings):
+                self._goal_embeddings.pop(index)
+
     @property
     def num_goals(self) -> int:
         return len(self._goal_embeddings)
 
-    def proximity(self, embedding: list[float] | None) -> float:
-        """Compute proximity score for a clause embedding.
+    def nearest_goal_distance(self, embedding: list[float] | None) -> float:
+        """Distance to the nearest (most similar) goal.
+
+        Returns (1 - max_cosine_similarity) / 2.  Lower = closer to some goal.
+        Use with argmin to select the clause nearest to any goal.
 
         Returns:
-            Float in [0, 1]. 1.0 = identical to a goal.
-            0.5 = neutral (no goals or orthogonal).
-            0.0 = maximally dissimilar.
+            Float in [0, 1]. 0.0 = identical to some goal.
+            0.5 = orthogonal to all goals. 1.0 = opposite to all goals.
         """
         if embedding is None:
             return 0.5
@@ -112,28 +168,51 @@ class GoalProximityScorer:
         if not goals:
             return 0.5
 
-        similarities = [_cosine_similarity(embedding, g) for g in goals]
+        best_sim = max(_cosine_similarity(embedding, g) for g in goals)
+        return (1.0 - best_sim) / 2.0
 
-        if self._method == "max":
-            best_sim = max(similarities)
-        else:
-            best_sim = sum(similarities) / len(similarities)
+    def farthest_goal_distance(self, embedding: list[float] | None) -> float:
+        """Distance to the farthest (least similar) goal.
 
-        # Map from [-1, 1] to [0, 1]
-        return (best_sim + 1.0) / 2.0
+        Returns (1 - min_cosine_similarity) / 2.  Lower = all goals are close.
+        Use with argmin to implement minimax-distance clause selection: pick
+        the clause whose maximum distance to any goal is minimised, favouring
+        clauses relevant to every goal rather than just one.
+
+        Returns:
+            Float in [0, 1]. 0.0 = identical to all goals.
+            0.5 = orthogonal to all goals. 1.0 = opposite to some goal.
+        """
+        if embedding is None:
+            return 0.5
+
+        with self._lock:
+            goals = self._goal_embeddings
+
+        if not goals:
+            return 0.5
+
+        worst_sim = min(_cosine_similarity(embedding, g) for g in goals)
+        return (1.0 - worst_sim) / 2.0
+
+
+def GoalProximityScorer(method: str = "max") -> GoalDistanceScorer:  # type: ignore[misc]
+    """Backwards-compatibility factory. The ``method`` parameter is ignored."""
+    return GoalDistanceScorer()
 
 
 # ── Goal-directed embedding provider ──────────────────────────────────────
 
 
 class GoalDirectedEmbeddingProvider:
-    """Wraps an EmbeddingProvider with goal-directed proximity enhancement.
+    """Wraps an EmbeddingProvider with goal-directed distance-based enhancement.
 
     When enabled and goals are registered:
-    - Embeddings are scaled by goal proximity: clauses closer to goals
-      get larger norms, which the proof_potential_score interprets as
-      more promising.
-    - Goal proximity information flows through the existing ML scoring
+    - Embeddings are scaled by goal distance: clauses far from the
+      DENY-justified reference (i.e. close to the actual goal) get
+      smaller norms, which the proof_potential_score interprets as
+      more promising (via inverse sigmoid on norm).
+    - Goal distance information flows through the existing ML scoring
       pipeline without any changes to ml_selection.py.
 
     When disabled:
@@ -162,9 +241,7 @@ class GoalDirectedEmbeddingProvider:
     ) -> None:
         self._base = base_provider
         self._config = config or GoalDirectedConfig()
-        self._goal_scorer = GoalProximityScorer(
-            method=self._config.proximity_method,
-        )
+        self._goal_scorer = GoalDistanceScorer()
         self._stats_lock = threading.Lock()
         self._clauses_observed: int = 0
         self._clauses_selected: int = 0
@@ -180,7 +257,7 @@ class GoalDirectedEmbeddingProvider:
         return self._base.embedding_dim
 
     def get_embedding(self, clause: Clause) -> list[float] | None:
-        """Return embedding, optionally enhanced with goal proximity."""
+        """Return embedding, optionally enhanced with goal-distance modulation."""
         emb = self._base.get_embedding(clause)
         if not self._config.enabled or emb is None:
             return emb
@@ -201,14 +278,25 @@ class GoalDirectedEmbeddingProvider:
     # ── Goal management ────────────────────────────────────────────────
 
     def register_goals(self, goals: list[Clause]) -> None:
-        """Register goal clauses for proximity scoring.
+        """Register goal clauses for distance scoring.
 
-        Computes embeddings for each goal via the base provider.
+        Normalises each goal before embedding:
+        1. Literal signs are forced to positive so the embedding points
+           toward the goal's structural content, not away from it.
+        2. Skolem constants are replaced by variables so the embedding
+           captures pure structural shape (e.g. P(i(x,y)) instead of
+           P(i(c1,c2))).  This makes distance meaningful for derived
+           clauses that share the same predicate/function structure but
+           contain different constants or variables.
+
         Goals that cannot be embedded are silently skipped.
         """
         goal_embeddings: list[list[float]] = []
         for g in goals:
-            emb = self._base.get_embedding(g)
+            # Normalise: strip signs and replace Skolem constants with
+            # variables so the embedding captures structural shape only.
+            normalised = _deskolemize_clause(g)
+            emb = self._base.get_embedding(normalised)
             if emb is not None:
                 goal_embeddings.append(emb)
             else:
@@ -232,8 +320,8 @@ class GoalDirectedEmbeddingProvider:
         return self._goal_scorer.num_goals
 
     @property
-    def goal_scorer(self) -> GoalProximityScorer:
-        """Access the goal proximity scorer (for testing/inspection)."""
+    def goal_scorer(self) -> GoalDistanceScorer:
+        """Access the goal distance scorer (for testing/inspection)."""
         return self._goal_scorer
 
     # ── Incremental update notifications ───────────────────────────────
@@ -315,33 +403,33 @@ class GoalDirectedEmbeddingProvider:
     # ── Internal ───────────────────────────────────────────────────────
 
     def _enhance_embedding(self, embedding: list[float]) -> list[float]:
-        """Modulate embedding with goal proximity.
+        """Modulate embedding norm by distance to the nearest goal.
 
-        Strategy: scale the embedding norm by goal proximity. Clauses
-        closer to goals get larger norms. The proof_potential_score
-        in ml_selection.py interprets smaller norms as higher potential
-        (via inverse sigmoid), so we invert: goal-close clauses get
-        SMALLER norms to score higher.
+        Goal embeddings are stored sign-stripped (positive), so a small
+        distance means the clause is structurally similar to the goal content
+        and is therefore proof-useful.
+
+        Strategy: reduce the embedding norm for goal-close (proof-useful)
+        clauses. The proof_potential_score in ml_selection.py interprets
+        smaller norms as higher potential (via inverse sigmoid), so a smaller
+        scale → higher score → more likely to be selected.
 
         The scaling factor is:
-            scale = 1.0 - goal_proximity_weight * proximity
+            scale = 1.0 - goal_proximity_weight * (1.0 - distance)
 
-        Where proximity ∈ [0, 1]:
-        - proximity = 1.0 (identical to goal): scale = 1 - weight
-          (smaller norm → higher proof potential score)
-        - proximity = 0.0 (opposite of goal): scale = 1.0 (unchanged)
-        - proximity = 0.5 (neutral): scale = 1 - weight/2
-
-        This ensures clauses aligned with goals are preferred by the
-        existing proof_potential scoring without any changes to
-        ml_selection.py.
+        Where distance = nearest_goal_distance ∈ [0, 1]:
+        - distance = 0.0 (clause identical to goal content, very proof-useful):
+          scale = 1 - weight  (smallest norm → highest proof potential score)
+        - distance = 1.0 (clause opposite to goal, not proof-useful):
+          scale = 1.0 (unchanged)
+        - distance = 0.5 (neutral): scale = 1 - weight/2
         """
-        proximity = self._goal_scorer.proximity(embedding)
+        distance = self._goal_scorer.nearest_goal_distance(embedding)
         weight = self._config.goal_proximity_weight
 
-        # Scale factor: lower for goal-proximate clauses → smaller norm
-        # → higher proof_potential_score
-        scale = 1.0 - weight * proximity
+        # Scale factor: lower for goal-close (proof-useful) clauses
+        # → smaller norm → higher proof_potential_score
+        scale = 1.0 - weight * (1.0 - distance)
 
         # Avoid zero scale (would lose direction information)
         scale = max(scale, 0.01)

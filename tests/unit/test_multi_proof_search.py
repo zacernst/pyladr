@@ -19,13 +19,35 @@ import pytest
 from pyladr.core.clause import Clause, Justification, JustType, Literal
 from pyladr.core.symbol import SymbolTable
 from pyladr.parsing.ladr_parser import parse_input, ParsedInput
-from pyladr.apps.prover9 import _apply_assignments
 from pyladr.search.given_clause import (
     ExitCode,
     GivenClauseSearch,
     SearchOptions,
     SearchResult,
 )
+
+
+def _apply_assignments(parsed: ParsedInput, opts: SearchOptions) -> None:
+    """Apply parsed assign() directives to SearchOptions.
+
+    Local helper replacing removed prover9._apply_assignments.
+    Mirrors the inline logic in run_prover().
+    """
+    assigns = parsed.assigns
+    if "max_proofs" in assigns:
+        opts.max_proofs = int(assigns["max_proofs"])
+    if "max_given" in assigns:
+        opts.max_given = int(assigns["max_given"])
+    if "max_kept" in assigns:
+        opts.max_kept = int(assigns["max_kept"])
+    if "max_seconds" in assigns:
+        opts.max_seconds = float(assigns["max_seconds"])
+    if "max_generated" in assigns:
+        opts.max_generated = int(assigns["max_generated"])
+    if "max_weight" in assigns:
+        opts.max_weight = float(assigns["max_weight"])
+    if "sos_limit" in assigns:
+        opts.sos_limit = int(assigns["sos_limit"])
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -479,18 +501,18 @@ end_of_list.
 """
         st = SymbolTable()
         parsed = parse_input(text, st)
-        assert "max_proofs" in parsed.assignments, (
+        assert "max_proofs" in parsed.assigns, (
             "REQ-R005: assign(max_proofs, N) not parsed into assignments dict"
         )
-        assert parsed.assignments["max_proofs"] == 10
+        assert parsed.assigns["max_proofs"] == 10
 
     def test_assign_max_proofs_integer_type(self):
         """assign(max_proofs, N) must parse as int, not float."""
         text = "assign(max_proofs, 5).\nformulas(sos).\n  P.\nend_of_list.\n"
         st = SymbolTable()
         parsed = parse_input(text, st)
-        assert isinstance(parsed.assignments["max_proofs"], int)
-        assert parsed.assignments["max_proofs"] == 5
+        assert isinstance(parsed.assigns["max_proofs"], int)
+        assert parsed.assigns["max_proofs"] == 5
 
     def test_assign_max_proofs_various_values(self):
         """Test parsing assign(max_proofs, N) for N=1,2,3,5,10."""
@@ -498,8 +520,8 @@ end_of_list.
             text = f"assign(max_proofs, {n}).\nformulas(sos).\n  P.\nend_of_list.\n"
             st = SymbolTable()
             parsed = parse_input(text, st)
-            assert parsed.assignments["max_proofs"] == n, (
-                f"assign(max_proofs, {n}) parsed as {parsed.assignments.get('max_proofs')}"
+            assert parsed.assigns["max_proofs"] == n, (
+                f"assign(max_proofs, {n}) parsed as {parsed.assigns.get('max_proofs')}"
             )
 
     def test_assign_multiple_directives(self):
@@ -514,16 +536,16 @@ end_of_list.
 """
         st = SymbolTable()
         parsed = parse_input(text, st)
-        assert parsed.assignments["max_proofs"] == 5
-        assert parsed.assignments["max_given"] == 200
-        assert parsed.assignments["max_seconds"] == 30.0 or parsed.assignments["max_seconds"] == 30
+        assert parsed.assigns["max_proofs"] == 5
+        assert parsed.assigns["max_given"] == 200
+        assert parsed.assigns["max_seconds"] == 30.0 or parsed.assigns["max_seconds"] == 30
 
     def test_assign_with_whitespace_variations(self):
         """assign() with extra whitespace still parsed correctly."""
         text = "assign( max_proofs , 3 ).\nformulas(sos).\n  P.\nend_of_list.\n"
         st = SymbolTable()
         parsed = parse_input(text, st)
-        assert parsed.assignments.get("max_proofs") == 3, (
+        assert parsed.assigns.get("max_proofs") == 3, (
             "assign() with extra whitespace not parsed correctly"
         )
 
@@ -537,7 +559,7 @@ assign(max_proofs, 7).
 """
         st = SymbolTable()
         parsed = parse_input(text, st)
-        assert parsed.assignments.get("max_proofs") == 7, (
+        assert parsed.assigns.get("max_proofs") == 7, (
             "assign() after formulas block not parsed"
         )
 
@@ -546,7 +568,7 @@ assign(max_proofs, 7).
         text = "formulas(sos).\n  P.\nend_of_list.\n"
         st = SymbolTable()
         parsed = parse_input(text, st)
-        assert len(parsed.assignments) == 0
+        assert len(parsed.assigns) == 0
 
 
 class TestAssignDirectiveApplication:
@@ -559,7 +581,7 @@ class TestAssignDirectiveApplication:
     def test_apply_max_proofs_overrides_default(self):
         """_apply_assignments must override default max_proofs=1."""
         parsed = ParsedInput()
-        parsed.assignments["max_proofs"] = 10
+        parsed.assigns["max_proofs"] = 10
 
         opts = SearchOptions()  # max_proofs defaults to 1
         assert opts.max_proofs == 1
@@ -572,7 +594,7 @@ class TestAssignDirectiveApplication:
     def test_apply_max_proofs_overrides_cli(self):
         """File assign() overrides CLI default (simulating run_prover flow)."""
         parsed = ParsedInput()
-        parsed.assignments["max_proofs"] = 5
+        parsed.assigns["max_proofs"] = 5
 
         # CLI default is 1 (args.max_proofs default)
         opts = SearchOptions(max_proofs=1)
@@ -582,7 +604,7 @@ class TestAssignDirectiveApplication:
     def test_apply_preserves_other_options(self):
         """Applying max_proofs doesn't clobber other SearchOptions fields."""
         parsed = ParsedInput()
-        parsed.assignments["max_proofs"] = 10
+        parsed.assigns["max_proofs"] = 10
 
         opts = SearchOptions(max_given=500, max_seconds=30.0, paramodulation=True)
         _apply_assignments(parsed, opts)
@@ -595,9 +617,9 @@ class TestAssignDirectiveApplication:
     def test_apply_multiple_assignments(self):
         """Multiple assign() directives all applied to SearchOptions."""
         parsed = ParsedInput()
-        parsed.assignments["max_proofs"] = 3
-        parsed.assignments["max_given"] = 1000
-        parsed.assignments["max_weight"] = 50.0
+        parsed.assigns["max_proofs"] = 3
+        parsed.assigns["max_given"] = 1000
+        parsed.assigns["max_weight"] = 50.0
 
         opts = SearchOptions()
         _apply_assignments(parsed, opts)
@@ -609,8 +631,8 @@ class TestAssignDirectiveApplication:
     def test_unknown_assignment_ignored(self):
         """Unknown assign() names are silently ignored (no crash)."""
         parsed = ParsedInput()
-        parsed.assignments["nonexistent_option"] = 42
-        parsed.assignments["max_proofs"] = 5
+        parsed.assigns["nonexistent_option"] = 42
+        parsed.assigns["max_proofs"] = 5
 
         opts = SearchOptions()
         _apply_assignments(parsed, opts)

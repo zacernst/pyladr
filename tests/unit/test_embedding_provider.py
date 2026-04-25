@@ -229,15 +229,15 @@ class TestCacheIntegration:
 class TestModelLifecycle:
     """Test model update and cache invalidation."""
 
-    def test_on_model_updated_invalidates_cache(self):
+    def test_swap_weights_invalidates_cache(self):
         provider = _make_provider()
 
         # Populate cache
         provider.get_embedding(_simple_clause())
         assert len(provider.cache) == 1
 
-        # Simulate model update
-        provider.on_model_updated()
+        # Swap weights (no-op: reload current weights) to trigger invalidation
+        provider.swap_weights(provider.model.state_dict())
 
         assert len(provider.cache) == 0
 

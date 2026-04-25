@@ -1,0 +1,15 @@
+% Test hyper-resolution compatibility counting
+set(print_given_stats).
+set(hyper_resolution).
+clear(binary_resolution).
+assign(max_given, 10).
+
+formulas(sos).
+  P(a).
+  P(b).
+  P(c).
+  -P(x) | Q(x).
+  -P(y) | -Q(y) | R(y).  % This should trigger hyper-resolution
+  S(d).
+  T(e).
+end_of_list.

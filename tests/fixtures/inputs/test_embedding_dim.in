@@ -1,0 +1,12 @@
+% Simple test for embedding dimension effects
+formulas(sos).
+  P(a) -> Q(b).
+  Q(b) -> R(c).
+  R(c) -> S(d).
+  S(d) -> T(e).
+  P(a).
+end_of_list.
+
+formulas(goals).
+  T(e).
+end_of_list.

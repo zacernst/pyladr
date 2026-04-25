@@ -1,0 +1,11 @@
+set(auto).
+assign(max_proofs, 1).
+
+formulas(sos).
+-P(x) | -P(i(x,y)) | P(y).
+P(i(i(x,y),i(i(y,z),i(x,z)))).
+end_of_list.
+
+formulas(goals).
+P(i(x,x)).
+end_of_list.

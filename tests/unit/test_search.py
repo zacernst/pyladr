@@ -34,12 +34,19 @@ def _func(symnum: int, *args: Term) -> Term:
     return get_rigid_term(symnum, len(args), args)
 
 
+_next_test_clause_id = 1
+
+
 def _make_clause(*atoms: Term, signs: tuple[bool, ...] | None = None) -> Clause:
     """Create a clause from atom terms with optional signs."""
+    global _next_test_clause_id
     if signs is None:
         signs = (True,) * len(atoms)
     lits = tuple(Literal(sign=s, atom=a) for s, a in zip(signs, atoms))
-    return Clause(literals=lits)
+    c = Clause(literals=lits)
+    c.id = _next_test_clause_id
+    _next_test_clause_id += 1
+    return c
 
 
 def _make_weighted_clause(weight: float, symnum: int = 1) -> Clause:
@@ -146,13 +153,13 @@ class TestGivenSelection:
     """Test clause selection strategy matching C giv_select.c."""
 
     def test_default_rules(self) -> None:
-        """Default rules are weight:5, age:1 ratio."""
+        """Default rules match C Prover9 age_factor=5: age:1, weight:4 (cycle of 5)."""
         gs = GivenSelection()
         assert len(gs.rules) == 2
-        assert gs.rules[0].order == SelectionOrder.WEIGHT
-        assert gs.rules[0].part == 5
-        assert gs.rules[1].order == SelectionOrder.AGE
-        assert gs.rules[1].part == 1
+        assert gs.rules[0].order == SelectionOrder.AGE
+        assert gs.rules[0].part == 1
+        assert gs.rules[1].order == SelectionOrder.WEIGHT
+        assert gs.rules[1].part == 4
 
     def test_select_by_weight(self) -> None:
         """Weight-based selection picks lightest clause."""
@@ -204,23 +211,23 @@ class TestGivenSelection:
         assert selected is c2  # lower ID wins tiebreak
 
     def test_ratio_cycling(self) -> None:
-        """Default 5:1 ratio cycles weight 5x then age 1x."""
-        gs = GivenSelection()  # default 5:1
+        """Default age_factor=5 ratio: age 1x then weight 4x (cycle of 5)."""
+        gs = GivenSelection()  # default 1:4 age:weight
         sos = ClauseList("sos")
 
         # Add enough clauses for cycling — all same weight, different IDs
-        for i in range(10):
+        for i in range(12):
             c = _make_weighted_clause(5.0, A)
             c.id = i + 1
             sos.append(c)
 
         selections = []
-        for i in range(6):
+        for i in range(10):
             _, name = gs.select_given(sos, i)
             selections.append(name)
 
-        # First 5 should be weight ("W"), 6th should be age ("A")
-        assert selections == ["W", "W", "W", "W", "W", "A"]
+        # C Prover9 pattern: (A), (T), (T), (T), (T), (A), (T), (T), (T), (T)
+        assert selections == ["A", "W", "W", "W", "W", "A", "W", "W", "W", "W"]
 
     def test_select_empty_sos(self) -> None:
         """Selecting from empty SOS returns None."""
@@ -342,6 +349,183 @@ class TestSearchStatistics:
         stats.start()
         assert stats.elapsed_seconds() >= 0.0
         assert stats.search_seconds() >= 0.0
+
+
+# ── Per-Given Inference Tracking Tests ───────────────────────────────────────
+
+
+class TestGivenInferenceTracking:
+    """Test per-given-clause inference count tracking.
+
+    Validates the new begin_given/record_generated/get_given_inference_count
+    methods added to SearchStatistics for tracking how many clauses each
+    given clause generates.
+    """
+
+    def test_initial_state(self) -> None:
+        """New fields start empty/zero."""
+        stats = SearchStatistics()
+        assert stats.given_inference_counts == {}
+        assert stats._current_given_id == 0
+
+    def test_begin_given_initializes_counter(self) -> None:
+        """begin_given sets current ID and initializes count to zero."""
+        stats = SearchStatistics()
+        stats.begin_given(42)
+        assert stats._current_given_id == 42
+        assert stats.given_inference_counts[42] == 0
+
+    def test_record_generated_increments_both(self) -> None:
+        """record_generated increments global and per-given counters."""
+        stats = SearchStatistics()
+        stats.begin_given(10)
+        stats.record_generated()
+        stats.record_generated()
+        stats.record_generated()
+        assert stats.generated == 3
+        assert stats.given_inference_counts[10] == 3
+
+    def test_record_generated_without_begin_given(self) -> None:
+        """record_generated with no active given still increments global."""
+        stats = SearchStatistics()
+        stats.record_generated()
+        assert stats.generated == 1
+        assert stats.given_inference_counts == {}
+
+    def test_multiple_given_clauses(self) -> None:
+        """Track inferences across multiple given clauses."""
+        stats = SearchStatistics()
+
+        stats.begin_given(1)
+        stats.record_generated()
+        stats.record_generated()
+
+        stats.begin_given(2)
+        stats.record_generated()
+
+        stats.begin_given(3)
+        stats.record_generated()
+        stats.record_generated()
+        stats.record_generated()
+        stats.record_generated()
+
+        assert stats.generated == 7
+        assert stats.given_inference_counts[1] == 2
+        assert stats.given_inference_counts[2] == 1
+        assert stats.given_inference_counts[3] == 4
+
+    def test_given_with_zero_inferences(self) -> None:
+        """A given clause that generates nothing still gets recorded."""
+        stats = SearchStatistics()
+        stats.begin_given(5)
+        # No record_generated calls
+        stats.begin_given(6)
+        stats.record_generated()
+
+        assert stats.given_inference_counts[5] == 0
+        assert stats.given_inference_counts[6] == 1
+
+    def test_get_given_inference_count(self) -> None:
+        """get_given_inference_count returns correct count."""
+        stats = SearchStatistics()
+        stats.begin_given(10)
+        stats.record_generated()
+        stats.record_generated()
+        assert stats.get_given_inference_count(10) == 2
+
+    def test_get_given_inference_count_missing_id(self) -> None:
+        """get_given_inference_count returns 0 for unknown clause ID."""
+        stats = SearchStatistics()
+        assert stats.get_given_inference_count(999) == 0
+
+    def test_top_given_clauses_basic(self) -> None:
+        """top_given_clauses returns sorted by count descending."""
+        stats = SearchStatistics()
+        stats.begin_given(1)
+        stats.record_generated()
+
+        stats.begin_given(2)
+        for _ in range(5):
+            stats.record_generated()
+
+        stats.begin_given(3)
+        for _ in range(3):
+            stats.record_generated()
+
+        top = stats.top_given_clauses(3)
+        assert len(top) == 3
+        assert top[0] == (2, 5)
+        assert top[1] == (3, 3)
+        assert top[2] == (1, 1)
+
+    def test_top_given_clauses_limit(self) -> None:
+        """top_given_clauses respects the n limit."""
+        stats = SearchStatistics()
+        for i in range(1, 20):
+            stats.begin_given(i)
+            for _ in range(i):
+                stats.record_generated()
+
+        top5 = stats.top_given_clauses(5)
+        assert len(top5) == 5
+        assert top5[0] == (19, 19)
+
+    def test_top_given_clauses_empty(self) -> None:
+        """top_given_clauses returns empty list when no given clauses."""
+        stats = SearchStatistics()
+        assert stats.top_given_clauses() == []
+
+    def test_top_given_clauses_default_n(self) -> None:
+        """top_given_clauses defaults to 10."""
+        stats = SearchStatistics()
+        for i in range(1, 15):
+            stats.begin_given(i)
+            stats.record_generated()
+        top = stats.top_given_clauses()
+        assert len(top) == 10
+
+    def test_report_format_unchanged(self) -> None:
+        """New tracking does NOT change the report() output format."""
+        stats = SearchStatistics()
+        stats.begin_given(1)
+        stats.record_generated()
+        stats.record_generated()
+        stats.given = 1
+        report = stats.report()
+        assert "given=1" in report
+        assert "generated=2" in report
+        assert "given_inference" not in report
+
+    def test_global_generated_matches_sum_of_per_given(self) -> None:
+        """Global generated count equals sum of all per-given counts."""
+        stats = SearchStatistics()
+        stats.begin_given(1)
+        stats.record_generated()
+        stats.record_generated()
+
+        stats.begin_given(2)
+        stats.record_generated()
+        stats.record_generated()
+        stats.record_generated()
+
+        per_given_total = sum(stats.given_inference_counts.values())
+        assert stats.generated == per_given_total
+
+    def test_existing_counters_unaffected(self) -> None:
+        """Using inference tracking doesn't affect other counters."""
+        stats = SearchStatistics()
+        stats.kept = 5
+        stats.subsumed = 3
+        stats.proofs = 1
+        stats.back_subsumed = 2
+
+        stats.begin_given(1)
+        stats.record_generated()
+
+        assert stats.kept == 5
+        assert stats.subsumed == 3
+        assert stats.proofs == 1
+        assert stats.back_subsumed == 2
 
 
 # ── Clause Weight Tests ─────────────────────────────────────────────────────

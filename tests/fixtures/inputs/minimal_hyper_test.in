@@ -1,0 +1,12 @@
+% Minimal test to isolate hyper-resolution partnership bug
+set(print_given_stats).
+set(hyper_resolution).
+clear(binary_resolution).
+clear(factoring).
+assign(max_given, 5).
+
+formulas(sos).
+  P(a).
+  P(b).
+  -P(x) | Q(x).
+end_of_list.

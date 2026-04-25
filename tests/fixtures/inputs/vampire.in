@@ -1,0 +1,141 @@
+set(auto).
+assign(max_proofs, -1).
+assign(max_weight, 120).
+set(print_given).
+
+formulas(sos).
+-P(x) | -P(i(x,y)) | P(y).
+% P(i(i(x,y),i(i(y,z),i(x,z)))).
+% P(i(i(n(x),x),x)).
+% P(i(x,i(n(x),y))).
+P(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(v),w),y)),i(v,z))))).
+end_of_list.
+
+formulas(hints).
+% P(i(i(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(v7,i(i(v8,i(v7,v9)),i(i(n(v9),i(i(n(v10),v11),v8)),i(v10,v9)))),y)))),i(z,i(x,y))),v12),i(v13,v12))).
+% P(i(i(i(i(x,y),i(x,y)),z),i(i(u,v),z))).
+% P(i(i(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(u),v),y)),i(u,z)))),w),i(v6,w))).
+% P(i(i(n(i(i(n(i(i(n(x),i(i(n(y),z),u)),i(y,x))),i(i(n(v),w),v6)),i(v,i(i(n(x),i(i(n(y),z),u)),i(y,x))))),i(i(n(v7),v8),i(u,i(v6,x)))),i(v7,i(i(n(i(i(n(x),i(i(n(y),z),u)),i(y,x))),i(i(n(v),w),v6)),i(v,i(i(n(x),i(i(n(y),z),u)),i(y,x))))))).
+% P(i(i(n(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(v),w),i(i(i(n(v6),i(i(n(v7),v8),n(x))),i(v7,v6)),i(i(v9,i(i(v10,i(v9,v11)),i(i(n(v11),i(i(n(v12),v13),v10)),i(v12,v11)))),y)))))),i(z,i(x,y)))),i(i(n(v14),v15),v)),i(v14,i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(v),w),i(i(i(n(v6),i(i(n(v7),v8),n(x))),i(v7,v6)),i(i(v9,i(i(v10,i(v9,v11)),i(i(n(v11),i(i(n(v12),v13),v10)),i(v12,v11)))),y)))))),i(z,i(x,y)))))).
+% P(i(i(n(i(i(x,i(i(i(y,z),i(y,z)),u)),i(i(n(u),i(i(n(v),w),x)),i(v,u)))),i(i(n(v6),v7),v8)),i(v6,i(i(x,i(i(i(y,z),i(y,z)),u)),i(i(n(u),i(i(n(v),w),x)),i(v,u)))))).
+% P(i(i(n(i(i(x,y),z)),i(i(n(u),v),i(i(w,i(x,y)),i(i(i(v6,v7),i(v6,v7)),z)))),i(u,i(i(x,y),z)))).
+% P(i(i(n(i(x,i(y,z))),i(i(n(u),v),z)),i(u,i(x,i(y,z))))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(i(n(i(v7,v8)),i(i(n(v9),v10),i(i(i(n(v11),i(i(n(v12),v13),n(v7))),i(v12,v11)),i(i(v14,i(i(v15,i(v14,v16)),i(i(n(v16),i(i(n(v17),v18),v15)),i(v17,v16)))),v8)))),i(v9,i(v7,v8))),y)))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13))),y)))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(v7,i(i(v8,i(v7,v9)),i(i(n(v9),i(i(n(v10),v11),v8)),i(v10,v9)))),y)))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(i(n(i(v,w)),i(i(n(v6),v7),i(i(i(n(v8),i(i(n(v9),v10),n(v))),i(v9,v8)),i(i(v11,i(i(v12,i(v11,v13)),i(i(n(v13),i(i(n(v14),v15),v12)),i(v14,v13)))),w)))),i(v6,i(v,w)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(x))),i(v18,v17)),i(i(v20,i(i(v21,i(v20,v22)),i(i(n(v22),i(i(n(v23),v24),v21)),i(v23,v22)))),y)))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(i(v,i(i(w,i(i(v6,i(w,v7)),i(i(n(v7),i(i(n(v8),v9),v6)),i(v8,v7)))),v10)),i(i(n(v10),i(i(n(v11),v12),v)),i(v11,v10)))),v13),i(i(i(n(v14),i(i(n(v15),v16),n(x))),i(v15,v14)),i(i(i(v17,i(i(v18,i(i(v19,i(v18,v20)),i(i(n(v20),i(i(n(v21),v22),v19)),i(v21,v20)))),v23)),i(i(n(v23),i(i(n(v24),v25),v17)),i(v24,v23))),y)))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(n(i(v,i(w,w))),v6)),v7),i(n(i(x,y)),i(i(n(i(i(v8,i(i(v9,i(i(v10,i(v9,v11)),i(i(n(v11),i(i(n(v12),v13),v10)),i(v12,v11)))),v14)),i(i(n(v14),i(i(n(v15),v16),v8)),i(v15,v14)))),v17),i(i(i(n(v18),i(i(n(v19),v20),n(x))),i(v19,v18)),i(i(i(v21,i(i(v22,i(i(v23,i(v22,v24)),i(i(n(v24),i(i(n(v25),v26),v23)),i(v25,v24)))),v27)),i(i(n(v27),i(i(n(v28),v29),v21)),i(v28,v27))),y)))))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(n(i(v,v)),w)),v6),i(n(i(x,y)),i(i(n(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(x))),i(v18,v17)),i(i(i(v20,i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),v26)),i(i(n(v26),i(i(n(v27),v28),v20)),i(v27,v26))),y)))))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(v,i(i(w,i(v,v6)),i(i(n(v6),i(i(n(v7),v8),w)),i(v7,v6))))),v9),i(i(i(n(v10),i(i(n(v11),v12),n(x))),i(v11,v10)),i(i(v13,i(i(v14,i(v13,v15)),i(i(n(v15),i(i(n(v16),v17),v14)),i(v16,v15)))),y)))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(v,i(i(w,i(v,v6)),i(i(n(v6),i(i(n(v7),v8),w)),i(v7,v6))))),v9),i(n(i(x,y)),i(i(n(i(v10,i(i(v11,i(v10,v12)),i(i(n(v12),i(i(n(v13),v14),v11)),i(v13,v12))))),v15),i(i(i(n(v16),i(i(n(v17),v18),n(x))),i(v17,v16)),i(i(v19,i(i(v20,i(v19,v21)),i(i(n(v21),i(i(n(v22),v23),v20)),i(v22,v21)))),y)))))))),i(z,i(x,y)))).
+% P(i(i(n(x),i(i(n(y),z),i(i(i(n(i(u,v)),i(i(n(w),v6),i(n(i(u,v)),i(i(n(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(u))),i(v18,v17)),i(i(i(v20,i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),v26)),i(i(n(v26),i(i(n(v27),v28),v20)),i(v27,v26))),v)))))),i(w,i(u,v))),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(i(u,v),i(u,v)),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(n(i(u,i(i(v,w),i(v,w)))),v6),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(n(i(u,u)),v),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(u,i(i(v,i(u,w)),i(i(n(w),i(i(n(v6),v7),v)),i(v6,w)))),x))),i(y,x))).
+% P(i(i(n(x),x),x)).
+% P(i(i(x,i(i(i(n(i(y,z)),i(i(n(u),v),i(i(i(n(w),i(i(n(v6),v7),n(y))),i(v6,w)),i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),z)))),i(u,i(y,z))),v13)),i(i(n(v13),i(i(n(v14),v15),x)),i(v14,v13)))).
+% P(i(i(x,i(i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(n(i(w,v6)),i(i(n(v7),v8),i(i(i(n(v9),i(i(n(v10),v11),n(w))),i(v10,v9)),i(i(v12,i(i(v13,i(v12,v14)),i(i(n(v14),i(i(n(v15),v16),v13)),i(v15,v14)))),v6)))),i(v7,i(w,v6)))),v17),i(i(i(n(v18),i(i(n(v19),v20),n(y))),i(v19,v18)),i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),z)))))),i(u,i(y,z))),v26)),i(i(n(v26),i(i(n(v27),v28),x)),i(v27,v26)))).
+% P(i(i(x,i(i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(w,i(i(v6,i(i(v7,i(v6,v8)),i(i(n(v8),i(i(n(v9),v10),v7)),i(v9,v8)))),v11)),i(i(n(v11),i(i(n(v12),v13),w)),i(v12,v11)))),v14),i(i(i(n(v15),i(i(n(v16),v17),n(y))),i(v16,v15)),i(i(i(v18,i(i(v19,i(i(v20,i(v19,v21)),i(i(n(v21),i(i(n(v22),v23),v20)),i(v22,v21)))),v24)),i(i(n(v24),i(i(n(v25),v26),v18)),i(v25,v24))),z)))))),i(u,i(y,z))),v27)),i(i(n(v27),i(i(n(v28),v29),x)),i(v28,v27)))).
+% P(i(i(x,i(i(i(y,i(i(z,i(i(u,i(z,v)),i(i(n(v),i(i(n(w),v6),u)),i(w,v)))),v7)),i(i(n(v7),i(i(n(v8),v9),y)),i(v8,v7))),v10)),i(i(n(v10),i(i(n(v11),v12),x)),i(v11,v10)))).
+% P(i(i(x,i(i(i(y,z),i(y,z)),u)),i(i(n(u),i(i(n(v),w),x)),i(v,u)))).
+% P(i(i(x,i(i(y,i(i(n(i(z,u)),i(i(n(v),w),i(n(i(z,u)),i(i(n(i(i(n(i(v6,v7)),i(i(n(v8),v9),i(i(i(n(v10),i(i(n(v11),v12),n(v6))),i(v11,v10)),i(i(v13,i(i(v14,i(v13,v15)),i(i(n(v15),i(i(n(v16),v17),v14)),i(v16,v15)))),v7)))),i(v8,i(v6,v7)))),v18),i(i(i(n(v19),i(i(n(v20),v21),n(z))),i(v20,v19)),i(i(v22,i(i(v23,i(v22,v24)),i(i(n(v24),i(i(n(v25),v26),v23)),i(v25,v24)))),u)))))),i(v,i(z,u)))),v27)),i(i(n(v27),i(i(n(v28),v29),x)),i(v28,v27)))).
+% P(i(i(x,i(i(y,i(i(z,i(y,u)),i(i(n(u),i(i(n(v),w),z)),i(v,u)))),v6)),i(i(n(v6),i(i(n(v7),v8),x)),i(v7,v6)))).
+% P(i(i(x,i(y,z)),i(y,i(x,z)))).
+% P(i(i(x,y),i(i(y,z),i(x,z)))).% #label("transitivity").
+% P(i(i(x,y),i(i(z,u),i(i(v,w),i(v,w))))).
+% P(i(i(x,y),i(i(z,u),i(z,u)))).
+% P(i(i(x,y),i(x,y))).
+% P(i(n(i(x,i(i(y,z),i(y,z)))),u)).
+% P(i(n(i(x,i(y,y))),z)).
+% P(i(n(i(x,x)),y)).
+% P(i(x,i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(n(i(w,v6)),i(i(n(v7),v8),i(i(i(n(v9),i(i(n(v10),v11),n(w))),i(v10,v9)),i(i(v12,i(i(v13,i(v12,v14)),i(i(n(v14),i(i(n(v15),v16),v13)),i(v15,v14)))),v6)))),i(v7,i(w,v6)))),v17),i(i(i(n(v18),i(i(n(v19),v20),n(y))),i(v19,v18)),i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),z)))))),i(u,i(y,z))))).
+% P(i(x,i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(n(w),i(i(n(v6),v7),n(x))),i(v6,w))),v8),i(i(i(n(v9),i(i(n(v10),v11),n(y))),i(v10,v9)),i(i(v12,i(i(v13,i(v12,v14)),i(i(n(v14),i(i(n(v15),v16),v13)),i(v15,v14)))),z)))))),i(u,i(y,z))))).
+% P(i(x,i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(n(x),w)),v6),i(n(i(y,z)),i(i(n(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(y))),i(v18,v17)),i(i(i(v20,i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),v26)),i(i(n(v26),i(i(n(v27),v28),v20)),i(v27,v26))),z)))))))),i(u,i(y,z))))).
+% P(i(x,i(i(n(y),i(i(n(z),u),i(i(n(x),v),y))),i(z,y)))).
+% P(i(x,i(i(n(y),i(i(n(z),u),n(i(v,v)))),i(z,y)))).
+% P(i(x,i(i(y,z),i(i(u,v),i(u,v))))).
+% P(i(x,i(i(y,z),i(y,z)))).
+% P(i(x,i(n(i(y,i(i(z,u),i(z,u)))),v))).
+% P(i(x,i(n(i(y,i(z,z))),u))).
+% P(i(x,i(n(i(y,y)),z))).
+% P(i(x,i(n(x),y))).
+% P(i(x,i(y,i(i(z,i(i(i(u,v),i(u,v)),w)),i(i(n(w),i(i(n(v6),v7),z)),i(v6,w)))))).
+% P(i(x,i(y,i(i(z,i(y,u)),i(i(n(u),i(i(n(v),w),z)),i(v,u)))))).
+% P(i(x,i(y,i(z,i(i(u,v),i(u,v)))))).
+% P(i(x,i(y,i(z,i(n(x),u))))).
+% P(i(x,i(y,i(z,i(u,i(n(y),v)))))).
+% P(i(x,i(y,i(z,i(u,i(v,i(w,i(n(u),v6)))))))).
+% P(i(x,i(y,i(z,i(u,x))))).
+% P(i(x,i(y,i(z,z)))).
+% P(i(x,i(y,y))).
+% P(i(x,x)).
+end_of_list.
+
+formulas(goals).
+P(i(i(x,y),i(i(y,z),i(x,z)))).
+P(i(i(n(x),x),x)).
+P(i(x,i(n(x),y))).
+% P(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(v),w),y)),i(v,z))))).% #label("vampire").
+% P(i(i(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(v7,i(i(v8,i(v7,v9)),i(i(n(v9),i(i(n(v10),v11),v8)),i(v10,v9)))),y)))),i(z,i(x,y))),v12),i(v13,v12))).
+% P(i(i(i(i(x,y),i(x,y)),z),i(i(u,v),z))).
+% P(i(i(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(u),v),y)),i(u,z)))),w),i(v6,w))).
+% P(i(i(n(i(i(n(i(i(n(x),i(i(n(y),z),u)),i(y,x))),i(i(n(v),w),v6)),i(v,i(i(n(x),i(i(n(y),z),u)),i(y,x))))),i(i(n(v7),v8),i(u,i(v6,x)))),i(v7,i(i(n(i(i(n(x),i(i(n(y),z),u)),i(y,x))),i(i(n(v),w),v6)),i(v,i(i(n(x),i(i(n(y),z),u)),i(y,x))))))).
+% P(i(i(n(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(v),w),i(i(i(n(v6),i(i(n(v7),v8),n(x))),i(v7,v6)),i(i(v9,i(i(v10,i(v9,v11)),i(i(n(v11),i(i(n(v12),v13),v10)),i(v12,v11)))),y)))))),i(z,i(x,y)))),i(i(n(v14),v15),v)),i(v14,i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(v),w),i(i(i(n(v6),i(i(n(v7),v8),n(x))),i(v7,v6)),i(i(v9,i(i(v10,i(v9,v11)),i(i(n(v11),i(i(n(v12),v13),v10)),i(v12,v11)))),y)))))),i(z,i(x,y)))))).
+% P(i(i(n(i(i(x,i(i(i(y,z),i(y,z)),u)),i(i(n(u),i(i(n(v),w),x)),i(v,u)))),i(i(n(v6),v7),v8)),i(v6,i(i(x,i(i(i(y,z),i(y,z)),u)),i(i(n(u),i(i(n(v),w),x)),i(v,u)))))).
+% P(i(i(n(i(i(x,y),z)),i(i(n(u),v),i(i(w,i(x,y)),i(i(i(v6,v7),i(v6,v7)),z)))),i(u,i(i(x,y),z)))).
+% P(i(i(n(i(x,i(y,z))),i(i(n(u),v),z)),i(u,i(x,i(y,z))))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(i(n(i(v7,v8)),i(i(n(v9),v10),i(i(i(n(v11),i(i(n(v12),v13),n(v7))),i(v12,v11)),i(i(v14,i(i(v15,i(v14,v16)),i(i(n(v16),i(i(n(v17),v18),v15)),i(v17,v16)))),v8)))),i(v9,i(v7,v8))),y)))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13))),y)))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(i(i(n(v),i(i(n(w),v6),n(x))),i(w,v)),i(i(v7,i(i(v8,i(v7,v9)),i(i(n(v9),i(i(n(v10),v11),v8)),i(v10,v9)))),y)))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(i(n(i(v,w)),i(i(n(v6),v7),i(i(i(n(v8),i(i(n(v9),v10),n(v))),i(v9,v8)),i(i(v11,i(i(v12,i(v11,v13)),i(i(n(v13),i(i(n(v14),v15),v12)),i(v14,v13)))),w)))),i(v6,i(v,w)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(x))),i(v18,v17)),i(i(v20,i(i(v21,i(v20,v22)),i(i(n(v22),i(i(n(v23),v24),v21)),i(v23,v22)))),y)))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(i(v,i(i(w,i(i(v6,i(w,v7)),i(i(n(v7),i(i(n(v8),v9),v6)),i(v8,v7)))),v10)),i(i(n(v10),i(i(n(v11),v12),v)),i(v11,v10)))),v13),i(i(i(n(v14),i(i(n(v15),v16),n(x))),i(v15,v14)),i(i(i(v17,i(i(v18,i(i(v19,i(v18,v20)),i(i(n(v20),i(i(n(v21),v22),v19)),i(v21,v20)))),v23)),i(i(n(v23),i(i(n(v24),v25),v17)),i(v24,v23))),y)))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(n(i(v,i(w,w))),v6)),v7),i(n(i(x,y)),i(i(n(i(i(v8,i(i(v9,i(i(v10,i(v9,v11)),i(i(n(v11),i(i(n(v12),v13),v10)),i(v12,v11)))),v14)),i(i(n(v14),i(i(n(v15),v16),v8)),i(v15,v14)))),v17),i(i(i(n(v18),i(i(n(v19),v20),n(x))),i(v19,v18)),i(i(i(v21,i(i(v22,i(i(v23,i(v22,v24)),i(i(n(v24),i(i(n(v25),v26),v23)),i(v25,v24)))),v27)),i(i(n(v27),i(i(n(v28),v29),v21)),i(v28,v27))),y)))))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(n(i(v,v)),w)),v6),i(n(i(x,y)),i(i(n(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(x))),i(v18,v17)),i(i(i(v20,i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),v26)),i(i(n(v26),i(i(n(v27),v28),v20)),i(v27,v26))),y)))))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(v,i(i(w,i(v,v6)),i(i(n(v6),i(i(n(v7),v8),w)),i(v7,v6))))),v9),i(i(i(n(v10),i(i(n(v11),v12),n(x))),i(v11,v10)),i(i(v13,i(i(v14,i(v13,v15)),i(i(n(v15),i(i(n(v16),v17),v14)),i(v16,v15)))),y)))))),i(z,i(x,y)))).
+% P(i(i(n(i(x,y)),i(i(n(z),u),i(n(i(x,y)),i(i(n(i(v,i(i(w,i(v,v6)),i(i(n(v6),i(i(n(v7),v8),w)),i(v7,v6))))),v9),i(n(i(x,y)),i(i(n(i(v10,i(i(v11,i(v10,v12)),i(i(n(v12),i(i(n(v13),v14),v11)),i(v13,v12))))),v15),i(i(i(n(v16),i(i(n(v17),v18),n(x))),i(v17,v16)),i(i(v19,i(i(v20,i(v19,v21)),i(i(n(v21),i(i(n(v22),v23),v20)),i(v22,v21)))),y)))))))),i(z,i(x,y)))).
+% P(i(i(n(x),i(i(n(y),z),i(i(i(n(i(u,v)),i(i(n(w),v6),i(n(i(u,v)),i(i(n(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(u))),i(v18,v17)),i(i(i(v20,i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),v26)),i(i(n(v26),i(i(n(v27),v28),v20)),i(v27,v26))),v)))))),i(w,i(u,v))),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(i(u,v),i(u,v)),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(n(i(u,i(i(v,w),i(v,w)))),v6),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(n(i(u,u)),v),x))),i(y,x))).
+% P(i(i(n(x),i(i(n(y),z),i(i(u,i(i(v,i(u,w)),i(i(n(w),i(i(n(v6),v7),v)),i(v6,w)))),x))),i(y,x))).
+% P(i(i(n(x),x),x)).
+% P(i(i(x,i(i(i(n(i(y,z)),i(i(n(u),v),i(i(i(n(w),i(i(n(v6),v7),n(y))),i(v6,w)),i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),z)))),i(u,i(y,z))),v13)),i(i(n(v13),i(i(n(v14),v15),x)),i(v14,v13)))).
+% P(i(i(x,i(i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(n(i(w,v6)),i(i(n(v7),v8),i(i(i(n(v9),i(i(n(v10),v11),n(w))),i(v10,v9)),i(i(v12,i(i(v13,i(v12,v14)),i(i(n(v14),i(i(n(v15),v16),v13)),i(v15,v14)))),v6)))),i(v7,i(w,v6)))),v17),i(i(i(n(v18),i(i(n(v19),v20),n(y))),i(v19,v18)),i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),z)))))),i(u,i(y,z))),v26)),i(i(n(v26),i(i(n(v27),v28),x)),i(v27,v26)))).
+% P(i(i(x,i(i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(w,i(i(v6,i(i(v7,i(v6,v8)),i(i(n(v8),i(i(n(v9),v10),v7)),i(v9,v8)))),v11)),i(i(n(v11),i(i(n(v12),v13),w)),i(v12,v11)))),v14),i(i(i(n(v15),i(i(n(v16),v17),n(y))),i(v16,v15)),i(i(i(v18,i(i(v19,i(i(v20,i(v19,v21)),i(i(n(v21),i(i(n(v22),v23),v20)),i(v22,v21)))),v24)),i(i(n(v24),i(i(n(v25),v26),v18)),i(v25,v24))),z)))))),i(u,i(y,z))),v27)),i(i(n(v27),i(i(n(v28),v29),x)),i(v28,v27)))).
+% P(i(i(x,i(i(i(y,i(i(z,i(i(u,i(z,v)),i(i(n(v),i(i(n(w),v6),u)),i(w,v)))),v7)),i(i(n(v7),i(i(n(v8),v9),y)),i(v8,v7))),v10)),i(i(n(v10),i(i(n(v11),v12),x)),i(v11,v10)))).
+% P(i(i(x,i(i(i(y,z),i(y,z)),u)),i(i(n(u),i(i(n(v),w),x)),i(v,u)))).
+% P(i(i(x,i(i(y,i(i(n(i(z,u)),i(i(n(v),w),i(n(i(z,u)),i(i(n(i(i(n(i(v6,v7)),i(i(n(v8),v9),i(i(i(n(v10),i(i(n(v11),v12),n(v6))),i(v11,v10)),i(i(v13,i(i(v14,i(v13,v15)),i(i(n(v15),i(i(n(v16),v17),v14)),i(v16,v15)))),v7)))),i(v8,i(v6,v7)))),v18),i(i(i(n(v19),i(i(n(v20),v21),n(z))),i(v20,v19)),i(i(v22,i(i(v23,i(v22,v24)),i(i(n(v24),i(i(n(v25),v26),v23)),i(v25,v24)))),u)))))),i(v,i(z,u)))),v27)),i(i(n(v27),i(i(n(v28),v29),x)),i(v28,v27)))).
+% P(i(i(x,i(i(y,i(i(z,i(y,u)),i(i(n(u),i(i(n(v),w),z)),i(v,u)))),v6)),i(i(n(v6),i(i(n(v7),v8),x)),i(v7,v6)))).
+% P(i(i(x,i(y,z)),i(y,i(x,z)))).
+% P(i(i(x,y),i(i(y,z),i(x,z)))).% #label("transitivity").
+% P(i(i(x,y),i(i(z,u),i(i(v,w),i(v,w))))).
+% P(i(i(x,y),i(i(z,u),i(z,u)))).
+% P(i(i(x,y),i(x,y))).
+% P(i(n(i(x,i(i(y,z),i(y,z)))),u)).
+% P(i(n(i(x,i(y,y))),z)).
+% P(i(n(i(x,x)),y)).
+% P(i(x,i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(n(i(w,v6)),i(i(n(v7),v8),i(i(i(n(v9),i(i(n(v10),v11),n(w))),i(v10,v9)),i(i(v12,i(i(v13,i(v12,v14)),i(i(n(v14),i(i(n(v15),v16),v13)),i(v15,v14)))),v6)))),i(v7,i(w,v6)))),v17),i(i(i(n(v18),i(i(n(v19),v20),n(y))),i(v19,v18)),i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),z)))))),i(u,i(y,z))))).
+% P(i(x,i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(i(n(w),i(i(n(v6),v7),n(x))),i(v6,w))),v8),i(i(i(n(v9),i(i(n(v10),v11),n(y))),i(v10,v9)),i(i(v12,i(i(v13,i(v12,v14)),i(i(n(v14),i(i(n(v15),v16),v13)),i(v15,v14)))),z)))))),i(u,i(y,z))))).
+% P(i(x,i(i(n(i(y,z)),i(i(n(u),v),i(n(i(y,z)),i(i(n(i(n(x),w)),v6),i(n(i(y,z)),i(i(n(i(i(v7,i(i(v8,i(i(v9,i(v8,v10)),i(i(n(v10),i(i(n(v11),v12),v9)),i(v11,v10)))),v13)),i(i(n(v13),i(i(n(v14),v15),v7)),i(v14,v13)))),v16),i(i(i(n(v17),i(i(n(v18),v19),n(y))),i(v18,v17)),i(i(i(v20,i(i(v21,i(i(v22,i(v21,v23)),i(i(n(v23),i(i(n(v24),v25),v22)),i(v24,v23)))),v26)),i(i(n(v26),i(i(n(v27),v28),v20)),i(v27,v26))),z)))))))),i(u,i(y,z))))).
+% P(i(x,i(i(n(y),i(i(n(z),u),i(i(n(x),v),y))),i(z,y)))).
+% P(i(x,i(i(n(y),i(i(n(z),u),n(i(v,v)))),i(z,y)))).
+% P(i(x,i(i(y,z),i(i(u,v),i(u,v))))).
+% P(i(x,i(i(y,z),i(y,z)))).
+% P(i(x,i(n(i(y,i(i(z,u),i(z,u)))),v))).
+% P(i(x,i(n(i(y,i(z,z))),u))).
+% P(i(x,i(n(i(y,y)),z))).
+% P(i(x,i(n(x),y))).
+% P(i(x,i(y,i(i(z,i(i(i(u,v),i(u,v)),w)),i(i(n(w),i(i(n(v6),v7),z)),i(v6,w)))))).
+% P(i(x,i(y,i(i(z,i(y,u)),i(i(n(u),i(i(n(v),w),z)),i(v,u)))))).
+% P(i(x,i(y,i(z,i(i(u,v),i(u,v)))))).
+% P(i(x,i(y,i(z,i(n(x),u))))).
+% P(i(x,i(y,i(z,i(u,i(n(y),v)))))).
+% P(i(x,i(y,i(z,i(u,i(v,i(w,i(n(u),v6)))))))).
+% P(i(x,i(y,i(z,i(u,x))))).
+% P(i(x,i(y,i(z,z)))).
+% P(i(x,i(y,y))).
+% P(i(x,x)).
+
+end_of_list.

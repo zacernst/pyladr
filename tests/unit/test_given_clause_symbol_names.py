@@ -631,10 +631,10 @@ class TestSkolemConstantNaming:
         # Our test helper uses simple denial; Skolem constants come from the
         # CLI path.  Just verify the basic mechanism works.
         st = SymbolTable()
-        sn = st.str_to_sn("c0", 0)
+        sn = st.str_to_sn("_sk0", 0)
         st.mark_skolem(sn)
         name = st.id_to_name(sn)
-        assert name == "c0", f"Skolem constant name should be 'c0', got '{name}'"
+        assert name == "_sk0", f"Skolem constant name should be '_sk0', got '{name}'"
 
 
 # ── Cross-validation with C reference ────────────────────────────────────────

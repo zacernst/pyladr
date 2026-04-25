@@ -119,10 +119,13 @@ class TestLazyDemodSearchIntegration:
         """Baseline: search works with lazy_demod=False."""
         from pyladr.search.given_clause import GivenClauseSearch, SearchOptions
 
-        a = get_rigid_term(2, 0)
+        st = SymbolTable()
+        a_id = st.str_to_sn("a", 0)
+        p_id = st.str_to_sn("P", 1)
+        a = get_rigid_term(a_id, 0)
         x = get_variable_term(0)
-        Pa = get_rigid_term(3, 1, (a,))
-        Px = get_rigid_term(3, 1, (x,))
+        Pa = get_rigid_term(p_id, 1, (a,))
+        Px = get_rigid_term(p_id, 1, (x,))
 
         c1 = Clause(
             literals=(Literal(sign=True, atom=Px),),
@@ -134,7 +137,7 @@ class TestLazyDemodSearchIntegration:
         )
 
         opts = SearchOptions(lazy_demod=False)
-        search = GivenClauseSearch(options=opts)
+        search = GivenClauseSearch(options=opts, symbol_table=st)
         result = search.run(usable=[], sos=[c1, c2])
         assert len(result.proofs) == 1
 
@@ -142,10 +145,13 @@ class TestLazyDemodSearchIntegration:
         """Search with lazy_demod=True finds same proof."""
         from pyladr.search.given_clause import GivenClauseSearch, SearchOptions
 
-        a = get_rigid_term(2, 0)
+        st = SymbolTable()
+        a_id = st.str_to_sn("a", 0)
+        p_id = st.str_to_sn("P", 1)
+        a = get_rigid_term(a_id, 0)
         x = get_variable_term(0)
-        Pa = get_rigid_term(3, 1, (a,))
-        Px = get_rigid_term(3, 1, (x,))
+        Pa = get_rigid_term(p_id, 1, (a,))
+        Px = get_rigid_term(p_id, 1, (x,))
 
         c1 = Clause(
             literals=(Literal(sign=True, atom=Px),),
@@ -157,7 +163,7 @@ class TestLazyDemodSearchIntegration:
         )
 
         opts = SearchOptions(lazy_demod=True)
-        search = GivenClauseSearch(options=opts)
+        search = GivenClauseSearch(options=opts, symbol_table=st)
         result = search.run(usable=[], sos=[c1, c2])
         assert len(result.proofs) == 1
         assert search._lazy_demod is not None

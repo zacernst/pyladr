@@ -1,11 +1,15 @@
-% Simple group theory: prove commutativity from x*x=e
+% Group commutativity from x*x=e.
+% Group axioms with involution property.
+
 formulas(sos).
-  e * x = x.
-  x' * x = e.
-  (x * y) * z = x * (y * z).
-  x * x = e.
+f(e,x) = x.
+f(x,e) = x.
+f(g(x),x) = e.
+f(x,g(x)) = e.
+f(f(x,y),z) = f(x,f(y,z)).
+f(x,x) = e.
 end_of_list.
 
 formulas(goals).
-  x * y = y * x.
+f(a,b) = f(b,a).
 end_of_list.

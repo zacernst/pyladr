@@ -1,13 +1,11 @@
-% Lattice theory: verify absorption law derivation
+% Lattice idempotence from absorption laws.
+% meet(x, join(x, y)) = x and join(x, meet(x, y)) = x.
+
 formulas(sos).
-  x ^ y = y ^ x.
-  x v y = y v x.
-  (x ^ y) ^ z = x ^ (y ^ z).
-  (x v y) v z = x v (y v z).
-  x ^ (x v y) = x.
-  x v (x ^ y) = x.
+meet(x, join(x, y)) = x.
+join(x, meet(x, y)) = x.
 end_of_list.
 
 formulas(goals).
-  x ^ x = x.
+meet(a, a) = a.
 end_of_list.

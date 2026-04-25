@@ -144,10 +144,10 @@ class TestBackwardCompatibility:
         assert args.online_learning is False
         assert args.ml_weight is None
         assert args.embedding_dim == 32
-        # Repetition bias
-        assert args.repetition_bias is False
-        assert args.repetition_penalty == 0.3
-        assert args.repetition_decay == 0.02
+        # Repetition penalty
+        assert args.repetition_penalty is False
+        assert args.repetition_penalty_weight == 2.0
+        assert args.repetition_penalty_min_size == 2
 
     def test_existing_ml_args_still_work(self, parser):
         """Existing ML arguments are not broken by new goal-directed group."""
@@ -161,15 +161,15 @@ class TestBackwardCompatibility:
         assert args.embedding_dim == 64
 
     def test_existing_repetition_args_still_work(self, parser):
-        """Existing repetition bias arguments are not broken."""
+        """Existing repetition penalty arguments are not broken."""
         args = parser.parse_args([
-            "--repetition-bias",
-            "--repetition-penalty", "0.5",
-            "--repetition-decay", "0.01",
+            "--repetition-penalty",
+            "--repetition-penalty-weight", "0.5",
+            "--repetition-penalty-min-size", "3",
         ])
-        assert args.repetition_bias is True
-        assert args.repetition_penalty == 0.5
-        assert args.repetition_decay == 0.01
+        assert args.repetition_penalty is True
+        assert args.repetition_penalty_weight == 0.5
+        assert args.repetition_penalty_min_size == 3
 
 
 # ── SearchOptions integration tests ───────────────────────────────────────
@@ -212,7 +212,7 @@ class TestSearchOptionsGoalDirected:
         assert opts.ml_weight is None
         assert opts.embedding_dim == 32
         # Repetition
-        assert opts.repetition_bias is False
+        assert opts.repetition_penalty is False
 
     def test_search_options_goal_directed_with_ml(self):
         """Goal-directed and ML options can coexist."""

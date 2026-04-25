@@ -1,0 +1,9 @@
+% Test file to check goal negation with variables
+formulas(sos).
+  P(a).
+  P(x) -> Q(x).
+end_of_list.
+
+formulas(goals).
+  Q(x).  % Goal with variable
+end_of_list.

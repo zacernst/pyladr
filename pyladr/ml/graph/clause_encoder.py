@@ -13,7 +13,8 @@ Architecture:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -329,6 +330,65 @@ class InferenceGuidanceHead(nn.Module):
 # ── Model persistence ─────────────────────────────────────────────────────
 
 
+def _config_json_path(checkpoint_path: str | Path) -> Path:
+    """Return the JSON sidecar path for a checkpoint file."""
+    p = Path(checkpoint_path)
+    return p.with_suffix(".config.json")
+
+
+def _validate_gnn_config(raw: dict[str, Any]) -> GNNConfig:
+    """Validate and construct a GNNConfig from a raw dictionary.
+
+    Applies bounds checking to prevent resource exhaustion from corrupted
+    or malicious checkpoint files.
+    """
+    hidden_dim = int(raw.get("hidden_dim", 256))
+    embedding_dim = int(raw.get("embedding_dim", 512))
+    num_layers = int(raw.get("num_layers", 3))
+    dropout = float(raw.get("dropout", 0.1))
+    symbol_vocab_size = int(raw.get("symbol_vocab_size", 10000))
+    symbol_embed_dim = int(raw.get("symbol_embed_dim", 64))
+
+    if not (8 <= hidden_dim <= 4096):
+        raise ValueError(f"hidden_dim={hidden_dim} out of safe range [8, 4096]")
+    if not (8 <= embedding_dim <= 4096):
+        raise ValueError(f"embedding_dim={embedding_dim} out of safe range [8, 4096]")
+    if not (1 <= num_layers <= 20):
+        raise ValueError(f"num_layers={num_layers} out of safe range [1, 20]")
+    if not (0.0 <= dropout <= 0.9):
+        raise ValueError(f"dropout={dropout} out of safe range [0.0, 0.9]")
+    if not (100 <= symbol_vocab_size <= 1_000_000):
+        raise ValueError(f"symbol_vocab_size={symbol_vocab_size} out of safe range")
+    if not (8 <= symbol_embed_dim <= 1024):
+        raise ValueError(f"symbol_embed_dim={symbol_embed_dim} out of safe range")
+
+    # Validate node_feature_dims: must be dict[str, int] with positive values
+    nfd_raw = raw.get("node_feature_dims", None)
+    if nfd_raw is not None:
+        if not isinstance(nfd_raw, dict):
+            raise ValueError("node_feature_dims must be a dict")
+        node_feature_dims = {}
+        for k, v in nfd_raw.items():
+            if not isinstance(k, str):
+                raise ValueError(f"node_feature_dims key must be str, got {type(k)}")
+            dim = int(v)
+            if not (1 <= dim <= 1024):
+                raise ValueError(f"node_feature_dims[{k!r}]={dim} out of range [1, 1024]")
+            node_feature_dims[k] = dim
+    else:
+        node_feature_dims = GNNConfig().node_feature_dims
+
+    return GNNConfig(
+        hidden_dim=hidden_dim,
+        embedding_dim=embedding_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+        symbol_vocab_size=symbol_vocab_size,
+        symbol_embed_dim=symbol_embed_dim,
+        node_feature_dims=node_feature_dims,
+    )
+
+
 def save_model(
     model: HeterogeneousClauseGNN,
     path: str | Path,
@@ -337,18 +397,30 @@ def save_model(
 ) -> None:
     """Save model weights and config to disk.
 
+    Uses a secure checkpoint format: tensor data via torch.save (weights_only
+    compatible), config and metadata via JSON sidecar file. This prevents
+    arbitrary code execution from malicious checkpoint files.
+
     Args:
         model: The GNN model to save.
-        path: File path for the checkpoint.
+        path: File path for the checkpoint (.pt).
         config: Config to save alongside weights. Uses model.config if None.
         metadata: Optional metadata (training stats, etc).
     """
-    checkpoint = {
-        "model_state_dict": model.state_dict(),
-        "config": config or model.config,
-        "metadata": metadata or {},
-    }
+    cfg = config or model.config
+
+    # Tensor-only checkpoint (safe for weights_only=True loading)
+    checkpoint = {"model_state_dict": model.state_dict()}
     torch.save(checkpoint, path)
+
+    # Config + metadata as JSON sidecar (no pickle, no code execution)
+    json_path = _config_json_path(path)
+    json_data = {
+        "config": asdict(cfg),
+        "metadata": metadata or {},
+        "format_version": 2,
+    }
+    json_path.write_text(json.dumps(json_data, indent=2), encoding="utf-8")
 
 
 def load_model(
@@ -357,6 +429,10 @@ def load_model(
 ) -> tuple[HeterogeneousClauseGNN, dict[str, Any]]:
     """Load a saved model from disk.
 
+    Supports both the secure v2 format (JSON sidecar + weights_only=True)
+    and the legacy v1 format (single pickle file) for backward compatibility.
+    Legacy format emits a warning encouraging migration.
+
     Args:
         path: Path to the saved checkpoint.
         device: Device to load the model onto.
@@ -364,10 +440,35 @@ def load_model(
     Returns:
         Tuple of (model, metadata dict).
     """
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
-    config = checkpoint["config"]
+    import warnings
+
+    json_path = _config_json_path(path)
+
+    if json_path.exists():
+        # Secure v2 format: weights_only=True + JSON config
+        checkpoint = torch.load(path, map_location=device, weights_only=True)
+        json_data = json.loads(json_path.read_text(encoding="utf-8"))
+        config = _validate_gnn_config(json_data["config"])
+        metadata = json_data.get("metadata", {})
+    else:
+        # Legacy v1 format: single pickle file (backward compatibility)
+        warnings.warn(
+            f"Loading legacy checkpoint format from {path}. "
+            "Re-save with save_model() to migrate to secure format.",
+            stacklevel=2,
+        )
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        config_raw = checkpoint.get("config")
+        if isinstance(config_raw, GNNConfig):
+            config = config_raw
+        elif isinstance(config_raw, dict):
+            config = _validate_gnn_config(config_raw)
+        else:
+            config = GNNConfig()
+        metadata = checkpoint.get("metadata", {})
+
     model = HeterogeneousClauseGNN(config)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
-    return model, checkpoint.get("metadata", {})
+    return model, metadata

@@ -26,25 +26,14 @@ matching the C subsume_literals() approach.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pyladr.core.clause import Clause, Literal
 from pyladr.core.substitution import Context, Trail, match
 from pyladr.core.term import Term
 
-
-# ── Statistics ────────────────────────────────────────────────────────────────
-
-_nonunit_subsumption_tests = 0
-
-
-def nonunit_subsumption_tests() -> int:
-    """Return count of nonunit subsumption tests (C nonunit_subsumption_tests)."""
-    return _nonunit_subsumption_tests
-
-
-def reset_subsumption_stats() -> None:
-    """Reset subsumption statistics (for testing)."""
-    global _nonunit_subsumption_tests
-    _nonunit_subsumption_tests = 0
+if TYPE_CHECKING:
+    from pyladr.search.statistics import SearchStatistics
 
 
 # ── Core subsumption ─────────────────────────────────────────────────────────
@@ -93,7 +82,7 @@ def _subsume_literals(
     return False
 
 
-def subsumes(c: Clause, d: Clause) -> bool:
+def subsumes(c: Clause, d: Clause, stats: SearchStatistics | None = None) -> bool:
     """Check if clause c subsumes clause d.
 
     Matching C subsumes(). Uses one-way matching (not backtrack unification).
@@ -102,12 +91,11 @@ def subsumes(c: Clause, d: Clause) -> bool:
     Args:
         c: Potential subsumer.
         d: Potential subsumee.
+        stats: Optional SearchStatistics to increment nonunit_subsumption_tests.
 
     Returns:
         True if c subsumes d.
     """
-    global _nonunit_subsumption_tests
-
     nc = c.num_literals
     nd = d.num_literals
 
@@ -134,7 +122,8 @@ def subsumes(c: Clause, d: Clause) -> bool:
         return False
 
     # Non-unit subsumption: full recursive check
-    _nonunit_subsumption_tests += 1
+    if stats is not None:
+        stats.nonunit_subsumption_tests += 1
 
     # Heuristic: reorder c's literals so the most restrictive (fewest
     # matching candidates in d by sign) come first.  This prunes the
@@ -158,7 +147,9 @@ def subsumes(c: Clause, d: Clause) -> bool:
 # ── Forward subsumption ──────────────────────────────────────────────────────
 
 
-def forward_subsume(d: Clause, pos_idx, neg_idx) -> Clause | None:
+def forward_subsume(
+    d: Clause, pos_idx, neg_idx, stats: SearchStatistics | None = None,
+) -> Clause | None:
     """Find a clause in the index that subsumes d.
 
     Matching C forward_subsume(). Checks all literals of d because when
@@ -169,12 +160,14 @@ def forward_subsume(d: Clause, pos_idx, neg_idx) -> Clause | None:
         d: Clause to check for subsumption.
         pos_idx: Mindex for positive literals (generalizations).
         neg_idx: Mindex for negative literals (generalizations).
+        stats: Optional SearchStatistics for tracking nonunit subsumption tests.
 
     Returns:
         The subsumer clause, or None if d is not subsumed.
     """
     nd = d.num_literals
     subst = Context()
+    seen: set[int] = set()
 
     for dlit in d.literals:
         # Retrieve generalizations of dlit from the appropriate index
@@ -186,8 +179,11 @@ def forward_subsume(d: Clause, pos_idx, neg_idx) -> Clause | None:
             # Only consider candidates indexed on their first literal
             if c.literals[0] is not c_first_lit:
                 continue
+            if c.id in seen:
+                continue
+            seen.add(c.id)
             nc = c.num_literals
-            if nc <= nd and subsumes(c, d):
+            if nc <= nd and subsumes(c, d, stats):
                 return c
 
     return None
@@ -196,6 +192,7 @@ def forward_subsume(d: Clause, pos_idx, neg_idx) -> Clause | None:
 def forward_subsume_from_lists(
     d: Clause,
     clause_lists: list,
+    stats: SearchStatistics | None = None,
 ) -> Clause | None:
     """Forward subsumption by scanning clause lists directly.
 
@@ -205,6 +202,7 @@ def forward_subsume_from_lists(
     Args:
         d: Clause to check for subsumption.
         clause_lists: Lists of clauses to check against.
+        stats: Optional SearchStatistics for tracking nonunit subsumption tests.
 
     Returns:
         The subsumer clause, or None.
@@ -216,7 +214,7 @@ def forward_subsume_from_lists(
             nc = c.num_literals
             if nc == 0:
                 return c  # Empty clause subsumes everything
-            if nc <= nd and subsumes(c, d):
+            if nc <= nd and subsumes(c, d, stats):
                 return c
 
     return None
@@ -225,7 +223,7 @@ def forward_subsume_from_lists(
 # ── Backward subsumption ─────────────────────────────────────────────────────
 
 
-def back_subsume(c: Clause, pos_idx, neg_idx) -> list[Clause]:
+def back_subsume(c: Clause, pos_idx, neg_idx, stats: SearchStatistics | None = None) -> list[Clause]:
     """Find all clauses in the index subsumed by c.
 
     Matching C back_subsume(). Uses the first literal of c to retrieve
@@ -260,7 +258,7 @@ def back_subsume(c: Clause, pos_idx, neg_idx) -> list[Clause]:
         if nc == 1:
             subsumees.append(d)
             seen.add(d.id)
-        elif nc <= nd and subsumes(c, d):
+        elif nc <= nd and subsumes(c, d, stats):
             subsumees.append(d)
             seen.add(d.id)
 
@@ -270,6 +268,7 @@ def back_subsume(c: Clause, pos_idx, neg_idx) -> list[Clause]:
 def back_subsume_from_lists(
     c: Clause,
     clause_lists: list,
+    stats: SearchStatistics | None = None,
 ) -> list[Clause]:
     """Backward subsumption by scanning clause lists directly.
 
@@ -278,6 +277,7 @@ def back_subsume_from_lists(
     Args:
         c: The new clause (potential subsumer).
         clause_lists: Lists of clauses to check.
+        stats: Optional SearchStatistics for tracking nonunit subsumption tests.
 
     Returns:
         List of clauses subsumed by c.
@@ -293,7 +293,7 @@ def back_subsume_from_lists(
             if d is c:
                 continue
             nd = d.num_literals
-            if nc <= nd and subsumes(c, d):
+            if nc <= nd and subsumes(c, d, stats):
                 subsumees.append(d)
 
     return subsumees
@@ -404,6 +404,7 @@ class BackSubsumptionIndex:
 def back_subsume_indexed(
     c: Clause,
     back_idx: BackSubsumptionIndex,
+    stats: SearchStatistics | None = None,
 ) -> list[Clause]:
     """Backward subsumption using predicate-sign index.
 
@@ -413,6 +414,7 @@ def back_subsume_indexed(
     Args:
         c: The new clause (potential subsumer).
         back_idx: Index of existing clauses.
+        stats: Optional SearchStatistics for tracking nonunit subsumption tests.
 
     Returns:
         List of clauses subsumed by c.
@@ -425,7 +427,7 @@ def back_subsume_indexed(
     subsumees: list[Clause] = []
 
     for d in candidates:
-        if subsumes(c, d):
+        if subsumes(c, d, stats):
             subsumees.append(d)
 
     return subsumees

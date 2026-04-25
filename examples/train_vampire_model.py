@@ -71,7 +71,7 @@ class ProofDataCollector:
         with open(problem_file) as f:
             input_text = f.read()
         parsed = parser.parse_input(input_text)
-        usable, sos = _deny_goals(parsed, self.symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, self.symbol_table)
 
         all_pairs = []
 

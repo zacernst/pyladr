@@ -1,0 +1,12 @@
+set(auto).
+assign(max_given, 3).
+set(print_given).
+
+formulas(sos).
+P(a).
+-P(x) | Q(x).
+end_of_list.
+
+formulas(goals).
+Q(a).
+end_of_list.

@@ -90,7 +90,7 @@ def run_traditional_search(problem_file: str, max_given: int = 500) -> Dict[str,
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
     # Configure traditional search
     opts = SearchOptions(
@@ -145,7 +145,7 @@ def run_ml_guided_search(problem_file: str, max_given: int = 500, ml_ratio: floa
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
     # Create embedding provider
     embedding_provider = create_mock_embedding_provider(symbol_table)

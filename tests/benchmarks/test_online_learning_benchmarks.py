@@ -303,6 +303,7 @@ def _run_with_learning(
 # ── Proof Preservation Tests ─────────────────────────────────────────────
 
 
+@pytest.mark.benchmark
 class TestProofPreservation:
     """Online learning must not prevent finding proofs that traditional search finds."""
 
@@ -334,6 +335,7 @@ class TestProofPreservation:
 # ── Hook Overhead Tests ──────────────────────────────────────────────────
 
 
+@pytest.mark.benchmark
 class TestHookOverhead:
     """Measure overhead of online learning hooks on search performance."""
 
@@ -371,6 +373,7 @@ class TestHookOverhead:
 # ── Learning Overhead Tests ──────────────────────────────────────────────
 
 
+@pytest.mark.benchmark
 class TestLearningOverhead:
     """Measure overhead of active online learning during search."""
 
@@ -405,6 +408,7 @@ class TestLearningOverhead:
 # ── Statistical Comparison ───────────────────────────────────────────────
 
 
+@pytest.mark.benchmark
 class TestStatisticalComparison:
     """Compare search statistics across all modes for programmatic problems."""
 
@@ -437,6 +441,7 @@ class TestStatisticalComparison:
 # ── File-Based Benchmark Tests ───────────────────────────────────────────
 
 
+@pytest.mark.benchmark
 class TestFileBenchmarks:
     """Run benchmarks on the standard .in problem files."""
 

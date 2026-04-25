@@ -87,7 +87,7 @@ def _run_python_on_text(
     parser = LADRParser(st)
     parsed = parser.parse_input(input_text)
 
-    usable, sos = _deny_goals(parsed, st)
+    usable, sos, _denied = _deny_goals(parsed, st)
 
     opts = SearchOptions(
         binary_resolution=True,
@@ -978,7 +978,7 @@ class TestHardProblems:
         """Both agree on vampire.in (propositional logic problem)."""
         from pyladr.parsing.ladr_parser import ParseError
 
-        path = PROJECT_ROOT / "vampire.in"
+        path = PROJECT_ROOT / "tests" / "fixtures" / "inputs" / "vampire.in"
         if not path.exists():
             pytest.skip("vampire.in not found")
 

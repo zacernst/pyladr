@@ -1078,10 +1078,10 @@ class _OnlineLearningGivenClauseSearch:
                 result = _original_make_inferences(self)
                 # If a new given was selected, notify integration
                 if self._state.stats.given > given_before:
-                    # Given clause was appended to usable's deque during selection
-                    usable_deque = self._state.usable._clauses
-                    if usable_deque:
-                        last_given = usable_deque[-1]
+                    # Given clause was appended to usable's dict during selection
+                    usable_clauses = self._state.usable._clauses
+                    if usable_clauses:
+                        last_given = next(reversed(usable_clauses.values()))
                         integration.on_given_selected(last_given, "")
                 integration.on_inferences_complete()
                 return result

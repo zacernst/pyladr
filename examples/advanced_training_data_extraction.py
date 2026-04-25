@@ -49,7 +49,7 @@ class AdvancedProofDataCollector:
             input_text = f.read()
 
         parsed = parser.parse_input(input_text)
-        usable, sos = _deny_goals(parsed, self.symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, self.symbol_table)
         initial_clauses = usable + sos
 
         logger.info(f"📋 Initial clauses: {len(initial_clauses)}")

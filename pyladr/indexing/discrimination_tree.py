@@ -48,12 +48,14 @@ class DiscrimNode:
 
     Internal nodes have children; leaf nodes have a data list.
     Siblings are stored in a sorted list (not a linked list as in C).
+    A dict (_children_map) provides O(1) child lookup by (node_type, symbol).
     """
 
     symbol: int          # varnum for DVARIABLE, symnum for DRIGID
     node_type: _NodeType
     children: list[DiscrimNode] = field(default_factory=list)
     data: list[Any] = field(default_factory=list)
+    _children_map: dict[tuple[int, int], DiscrimNode] = field(default_factory=dict)
 
     @property
     def is_leaf(self) -> bool:
@@ -103,11 +105,8 @@ def _collect_wild_path(t: Term, path: list[tuple[_NodeType, int]]) -> None:
 # ── Find or create child node ────────────────────────────────────────────────
 
 def _find_child(parent: DiscrimNode, node_type: _NodeType, symbol: int) -> DiscrimNode | None:
-    """Find a child node by type and symbol (linear scan, sorted by type then symbol)."""
-    for child in parent.children:
-        if child.node_type == node_type and child.symbol == symbol:
-            return child
-    return None
+    """Find a child node by type and symbol. O(1) via dict lookup."""
+    return parent._children_map.get((node_type, symbol))
 
 
 def _find_or_create_child(
@@ -117,19 +116,27 @@ def _find_or_create_child(
 
     Sort order: DVARIABLE nodes first (sorted by symbol), then DRIGID (sorted by symbol).
     This matches C where variables always precede rigid symbols in sibling lists.
+    Uses O(1) dict lookup for existing children; falls back to sorted insertion.
     """
-    # Search for existing
-    for i, child in enumerate(parent.children):
-        if child.node_type == node_type and child.symbol == symbol:
-            return child
-        # Insertion point: maintain sort (DVARIABLE < DRIGID, then by symbol)
-        if (child.node_type, child.symbol) > (node_type, symbol):
-            new_node = DiscrimNode(symbol=symbol, node_type=node_type)
-            parent.children.insert(i, new_node)
-            return new_node
-    # Append at end
+    key = (node_type, symbol)
+    existing = parent._children_map.get(key)
+    if existing is not None:
+        return existing
+
     new_node = DiscrimNode(symbol=symbol, node_type=node_type)
-    parent.children.append(new_node)
+    parent._children_map[key] = new_node
+
+    # Maintain sorted order in children list (DVARIABLE < DRIGID, then by symbol)
+    children = parent.children
+    lo, hi = 0, len(children)
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        c = children[mid]
+        if (c.node_type, c.symbol) < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    children.insert(lo, new_node)
     return new_node
 
 
@@ -160,32 +167,48 @@ class DiscrimWild:
     def insert(self, t: Term, obj: Any) -> None:
         """Insert a term→object mapping into the tree.
 
-        Matches C discrim_wild_insert().
+        Matches C discrim_wild_insert(). Traverses the term and tree
+        simultaneously in a single pass (no intermediate path list).
         """
-        path = _term_to_wild_path(t)
         with self._lock.write_lock():
             node = self._root
-            for ntype, sym in path:
-                node = _find_or_create_child(node, ntype, sym)
+            # Inline pre-order traversal with direct tree navigation
+            work = [t]
+            while work:
+                term = work.pop()
+                if term.is_variable:
+                    node = _find_or_create_child(node, _NodeType.DVARIABLE, 0)
+                else:
+                    node = _find_or_create_child(node, _NodeType.DRIGID, term.symnum)
+                    # Push args right-to-left so left arg is processed first
+                    for i in range(term.arity - 1, -1, -1):
+                        work.append(term.args[i])
             node.data.append(obj)
             self._size += 1
 
     def delete(self, t: Term, obj: Any) -> bool:
         """Remove a term→object mapping. Returns True if found and removed.
 
-        Matches C discrim_wild_delete().
+        Matches C discrim_wild_delete(). Traverses the term and tree
+        simultaneously in a single pass (no intermediate path list).
         """
-        path = _term_to_wild_path(t)
         with self._lock.write_lock():
-            # Navigate to leaf
+            # Navigate to leaf, recording (parent, child_key) for pruning
             node = self._root
-            ancestors: list[tuple[DiscrimNode, int]] = []  # (parent, child_index)
-            for ntype, sym in path:
+            ancestors: list[tuple[DiscrimNode, tuple[int, int]]] = []
+            work = [t]
+            while work:
+                term = work.pop()
+                if term.is_variable:
+                    ntype, sym = _NodeType.DVARIABLE, 0
+                else:
+                    ntype, sym = _NodeType.DRIGID, term.symnum
+                    for i in range(term.arity - 1, -1, -1):
+                        work.append(term.args[i])
                 child = _find_child(node, ntype, sym)
                 if child is None:
                     return False
-                idx = node.children.index(child)
-                ancestors.append((node, idx))
+                ancestors.append((node, (ntype, sym)))
                 node = child
 
             # Remove object from leaf data
@@ -198,8 +221,9 @@ class DiscrimWild:
 
             # Prune empty nodes bottom-up
             if not node.data and not node.children:
-                for parent, idx in reversed(ancestors):
-                    parent.children.pop(idx)
+                for parent, key in reversed(ancestors):
+                    child = parent._children_map.pop(key)
+                    parent.children.remove(child)
                     if parent.data or parent.children:
                         break
 
@@ -223,33 +247,25 @@ class DiscrimWild:
 
         At each position, a stored wildcard matches any query subterm,
         and a stored rigid symbol must match the query's rigid symbol exactly.
+        Uses O(1) dict lookup for child nodes.
         """
-        # Try wildcard children (DVARIABLE nodes match any query term)
-        for child in node.children:
-            if child.node_type == _NodeType.DVARIABLE:
-                # Wildcard matches entire query subterm — skip to next position
-                if child.data:
-                    results.extend(child.data)
-                # If child has further children, this is an internal wildcard
-                # in a longer path — shouldn't happen in a well-formed tree
-                # since wildcard always matches exactly one subterm position
-                break  # only one wildcard node (symbol=0)
+        # Try wildcard child — O(1) lookup
+        wild_child = node._children_map.get((_NodeType.DVARIABLE, 0))
+        if wild_child is not None:
+            if wild_child.data:
+                results.extend(wild_child.data)
 
         if query.is_variable:
-            # Query variable: only wildcards match (already handled above)
             return
 
-        # Try rigid match: stored symbol must equal query symbol
-        for child in node.children:
-            if child.node_type == _NodeType.DRIGID and child.symbol == query.symnum:
-                if query.arity == 0:
-                    # Constant: reached leaf position
-                    if child.data:
-                        results.extend(child.data)
-                else:
-                    # Complex: recursively match arguments
-                    self._retrieve_args_rec(query.args, 0, child, results)
-                break  # symbols are unique at each level
+        # Try rigid match — O(1) lookup
+        rigid_child = node._children_map.get((_NodeType.DRIGID, query.symnum))
+        if rigid_child is not None:
+            if query.arity == 0:
+                if rigid_child.data:
+                    results.extend(rigid_child.data)
+            else:
+                self._retrieve_args_rec(query.args, 0, rigid_child, results)
 
     def _retrieve_args_rec(
         self,
@@ -258,36 +274,29 @@ class DiscrimWild:
         node: DiscrimNode,
         results: list[Any],
     ) -> None:
-        """Recursively match arguments of a complex term."""
+        """Recursively match arguments of a complex term. O(1) child lookup."""
         if arg_idx >= len(args):
-            # All arguments matched — collect data at this node
             if node.data:
                 results.extend(node.data)
             return
 
         arg = args[arg_idx]
 
-        # Try wildcard children
-        for child in node.children:
-            if child.node_type == _NodeType.DVARIABLE:
-                self._retrieve_args_rec(args, arg_idx + 1, child, results)
-                break
+        # Try wildcard — O(1) lookup
+        wild_child = node._children_map.get((_NodeType.DVARIABLE, 0))
+        if wild_child is not None:
+            self._retrieve_args_rec(args, arg_idx + 1, wild_child, results)
 
         if arg.is_variable:
-            # Query arg is variable: only wildcards match (handled above)
             return
 
-        # Try rigid match on this argument
-        for child in node.children:
-            if child.node_type == _NodeType.DRIGID and child.symbol == arg.symnum:
-                if arg.arity == 0:
-                    # Constant argument
-                    self._retrieve_args_rec(args, arg_idx + 1, child, results)
-                else:
-                    # Complex argument: recurse into its args first,
-                    # then continue with remaining top-level args
-                    self._retrieve_nested_args(arg.args, 0, args, arg_idx + 1, child, results)
-                break
+        # Try rigid match — O(1) lookup
+        rigid_child = node._children_map.get((_NodeType.DRIGID, arg.symnum))
+        if rigid_child is not None:
+            if arg.arity == 0:
+                self._retrieve_args_rec(args, arg_idx + 1, rigid_child, results)
+            else:
+                self._retrieve_nested_args(arg.args, 0, args, arg_idx + 1, rigid_child, results)
 
     def _retrieve_nested_args(
         self,
@@ -298,44 +307,37 @@ class DiscrimWild:
         node: DiscrimNode,
         results: list[Any],
     ) -> None:
-        """Handle nested argument matching for complex arguments."""
+        """Handle nested argument matching for complex arguments. O(1) child lookup."""
         if inner_idx >= len(inner_args):
-            # Done with inner args, continue with outer args
             self._retrieve_args_rec(outer_args, outer_idx, node, results)
             return
 
         inner_arg = inner_args[inner_idx]
 
-        # Try wildcard
-        for child in node.children:
-            if child.node_type == _NodeType.DVARIABLE:
-                self._retrieve_nested_args(
-                    inner_args, inner_idx + 1, outer_args, outer_idx, child, results
-                )
-                break
+        # Try wildcard — O(1) lookup
+        wild_child = node._children_map.get((_NodeType.DVARIABLE, 0))
+        if wild_child is not None:
+            self._retrieve_nested_args(
+                inner_args, inner_idx + 1, outer_args, outer_idx, wild_child, results
+            )
 
         if inner_arg.is_variable:
             return
 
-        # Try rigid match
-        for child in node.children:
-            if child.node_type == _NodeType.DRIGID and child.symbol == inner_arg.symnum:
-                if inner_arg.arity == 0:
-                    self._retrieve_nested_args(
-                        inner_args, inner_idx + 1, outer_args, outer_idx, child, results
-                    )
-                else:
-                    # Further nesting
-                    self._retrieve_nested_args(
-                        inner_arg.args, 0,
-                        # After inner_arg's args, continue with rest of inner_args
-                        # This is handled by the pre-order traversal
-                        inner_args, inner_idx + 1,
-                        child, results,
-                    )
-                    # FIXME: This doesn't correctly handle deeply nested terms.
-                    # The C version uses an explicit flat stack. Let's use that approach.
-                break
+        # Try rigid match — O(1) lookup
+        rigid_child = node._children_map.get((_NodeType.DRIGID, inner_arg.symnum))
+        if rigid_child is not None:
+            if inner_arg.arity == 0:
+                self._retrieve_nested_args(
+                    inner_args, inner_idx + 1, outer_args, outer_idx, rigid_child, results
+                )
+            else:
+                # Further nesting
+                self._retrieve_nested_args(
+                    inner_arg.args, 0,
+                    inner_args, inner_idx + 1,
+                    rigid_child, results,
+                )
 
     def retrieve_generalizations_flat(self, query: Term) -> list[Any]:
         """Retrieve generalizations using flat stack (matches C algorithm exactly).
@@ -356,37 +358,64 @@ class DiscrimWild:
         node: DiscrimNode,
         results: list[Any],
     ) -> None:
-        """Flat-stack generalization retrieval.
+        """Flat-stack generalization retrieval (iterative).
 
         Walks the query in pre-order (flat_query) and the tree simultaneously.
         At each position, tries wildcard (skip entire subterm) and rigid match.
+        Uses an explicit stack to avoid RecursionError on large terms.
+        Uses O(1) dict lookup for child nodes instead of linear scan.
         """
-        if pos >= len(flat_query):
-            # Consumed all query subterms — collect results
-            if node.data:
-                results.extend(node.data)
-            return
+        work: list[tuple[int, DiscrimNode]] = [(pos, node)]
 
-        query_subterm = flat_query[pos]
+        while work:
+            pos, node = work.pop()
 
-        # Try wildcard children: DVARIABLE matches entire subterm at this position
-        for child in node.children:
-            if child.node_type == _NodeType.DVARIABLE:
-                # Skip the entire subterm (all its descendant subterms)
+            if pos >= len(flat_query):
+                if node.data:
+                    results.extend(node.data)
+                continue
+
+            query_subterm = flat_query[pos]
+
+            # Try wildcard child: DVARIABLE(0) matches entire subterm — O(1) lookup
+            wild_child = node._children_map.get((_NodeType.DVARIABLE, 0))
+            if wild_child is not None:
                 skip = query_subterm.symbol_count
-                self._flat_retrieve(flat_query, pos + skip, child, results)
-                break  # only one DVARIABLE node (symbol=0)
+                work.append((pos + skip, wild_child))
 
-        if query_subterm.is_variable:
-            # Query is variable: only wildcards match (already handled)
-            return
+            if query_subterm.is_variable:
+                continue
 
-        # Try rigid match: stored symbol must equal query symbol
-        for child in node.children:
-            if child.node_type == _NodeType.DRIGID and child.symbol == query_subterm.symnum:
-                # Matched: advance to next subterm in pre-order
-                self._flat_retrieve(flat_query, pos + 1, child, results)
-                break
+            # Try rigid match: O(1) lookup by symbol
+            rigid_child = node._children_map.get((_NodeType.DRIGID, query_subterm.symnum))
+            if rigid_child is not None:
+                work.append((pos + 1, rigid_child))
+
+    def retrieve_unifiables_flat(self, query: Term) -> list[Any]:
+        """Retrieve all stored objects whose terms could unify with the query.
+
+        If the query is ground, uses generalization retrieval (efficient).
+        If the query contains variables, returns all stored objects since any
+        indexed term could potentially unify with a variable. The caller must
+        still verify with unify() — this is an imperfect filter.
+        """
+        if query.is_ground:
+            return self.retrieve_generalizations_flat(query)
+        # Non-ground query: any stored term might unify. Return all.
+        results: list[Any] = []
+        with self._lock.read_lock():
+            self._collect_all_data(self._root, results)
+        return results
+
+    def _collect_all_data(self, node: DiscrimNode, results: list[Any]) -> None:
+        """Collect all data from all nodes in the tree."""
+        work: list[DiscrimNode] = [node]
+        while work:
+            n = work.pop()
+            if n.data:
+                results.extend(n.data)
+            for child in n.children:
+                work.append(child)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -417,31 +446,43 @@ class DiscrimBind:
     def insert(self, t: Term, obj: Any) -> None:
         """Insert a term→object mapping. Variables distinguished by varnum.
 
-        Matches C discrim_bind_insert().
+        Matches C discrim_bind_insert(). Single-pass traversal.
         """
-        path = _term_to_path(t)
         with self._lock.write_lock():
             node = self._root
-            for ntype, sym in path:
-                node = _find_or_create_child(node, ntype, sym)
+            work = [t]
+            while work:
+                term = work.pop()
+                if term.is_variable:
+                    node = _find_or_create_child(node, _NodeType.DVARIABLE, term.varnum)
+                else:
+                    node = _find_or_create_child(node, _NodeType.DRIGID, term.symnum)
+                    for i in range(term.arity - 1, -1, -1):
+                        work.append(term.args[i])
             node.data.append(obj)
             self._size += 1
 
     def delete(self, t: Term, obj: Any) -> bool:
         """Remove a term→object mapping. Returns True if found and removed.
 
-        Matches C discrim_bind_delete().
+        Matches C discrim_bind_delete(). Single-pass traversal.
         """
-        path = _term_to_path(t)
         with self._lock.write_lock():
             node = self._root
-            ancestors: list[tuple[DiscrimNode, int]] = []
-            for ntype, sym in path:
+            ancestors: list[tuple[DiscrimNode, tuple[int, int]]] = []
+            work = [t]
+            while work:
+                term = work.pop()
+                if term.is_variable:
+                    ntype, sym = _NodeType.DVARIABLE, term.varnum
+                else:
+                    ntype, sym = _NodeType.DRIGID, term.symnum
+                    for i in range(term.arity - 1, -1, -1):
+                        work.append(term.args[i])
                 child = _find_child(node, ntype, sym)
                 if child is None:
                     return False
-                idx = node.children.index(child)
-                ancestors.append((node, idx))
+                ancestors.append((node, (ntype, sym)))
                 node = child
 
             try:
@@ -452,8 +493,9 @@ class DiscrimBind:
             self._size -= 1
 
             if not node.data and not node.children:
-                for parent, idx in reversed(ancestors):
-                    parent.children.pop(idx)
+                for parent, key in reversed(ancestors):
+                    child = parent._children_map.pop(key)
+                    parent.children.remove(child)
                     if parent.data or parent.children:
                         break
 
@@ -506,30 +548,28 @@ class DiscrimBind:
         query_subterm = flat_query[pos]
         skip = query_subterm.symbol_count
 
-        # Try DVARIABLE children (tree variables)
+        # Try DVARIABLE children — iterate only variable children via the children list
+        # (bind trees may have multiple variable nodes with different varnums)
         for child in node.children:
-            if child.node_type == _NodeType.DVARIABLE:
-                varnum = child.symbol
-                if subst.is_bound(varnum):
-                    # Already bound: check match
-                    bound_term = subst.terms[varnum]
-                    if bound_term is not None and bound_term.term_ident(query_subterm):
-                        self._bind_retrieve(flat_query, pos + skip, child, subst, results)
-                else:
-                    # Unbound: bind and continue
-                    subst.bind(varnum, query_subterm, None)
+            if child.node_type != _NodeType.DVARIABLE:
+                break  # sorted order: all DVARIABLE nodes come first
+            varnum = child.symbol
+            if subst.is_bound(varnum):
+                bound_term = subst.terms[varnum]
+                if bound_term is not None and bound_term == query_subterm:
                     self._bind_retrieve(flat_query, pos + skip, child, subst, results)
-                    subst.unbind(varnum)
+            else:
+                subst.bind(varnum, query_subterm, None)
+                self._bind_retrieve(flat_query, pos + skip, child, subst, results)
+                subst.unbind(varnum)
 
         if query_subterm.is_variable:
-            # Query variable: only tree variables can match (handled above)
             return
 
-        # Try DRIGID children
-        for child in node.children:
-            if child.node_type == _NodeType.DRIGID and child.symbol == query_subterm.symnum:
-                self._bind_retrieve(flat_query, pos + 1, child, subst, results)
-                break
+        # Try DRIGID child — O(1) lookup
+        rigid_child = node._children_map.get((_NodeType.DRIGID, query_subterm.symnum))
+        if rigid_child is not None:
+            self._bind_retrieve(flat_query, pos + 1, rigid_child, subst, results)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -614,6 +654,26 @@ class Mindex:
             return [obj for obj, _ in self._discrim_bind.retrieve_generalizations(query)]
         if self._linear is not None:
             # Linear: return all (caller must match)
+            with self._lock.read_lock():
+                return [obj for _, obj in self._linear]
+        return []
+
+    def retrieve_unifiables(self, query: Term) -> list[Any]:
+        """Retrieve objects whose indexed terms could unify with the query.
+
+        For ground queries, equivalent to retrieve_generalizations (efficient).
+        For non-ground queries, returns all stored objects as candidates.
+        The caller must verify with unify().
+        """
+        if self._discrim_wild is not None:
+            return self._discrim_wild.retrieve_unifiables_flat(query)
+        if self._discrim_bind is not None:
+            # DiscrimBind only supports generalization; fall back to all for non-ground
+            if query.is_ground:
+                return [obj for obj, _ in self._discrim_bind.retrieve_generalizations(query)]
+            # Non-ground: return all entries
+            return [obj for obj, _ in self._discrim_bind.retrieve_generalizations(query)]
+        if self._linear is not None:
             with self._lock.read_lock():
                 return [obj for _, obj in self._linear]
         return []

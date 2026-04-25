@@ -33,7 +33,7 @@ def _parse_and_deny(input_text: str) -> tuple[list[Clause], list[Clause], Symbol
     """Parse input, deny goals, return (usable, sos, symbol_table)."""
     st = SymbolTable()
     parsed = parse_input(input_text, st)
-    usable, sos = _deny_goals(parsed, st)
+    usable, sos, _denied = _deny_goals(parsed, st)
     return usable, sos, st
 
 
@@ -46,7 +46,7 @@ def _run_search(
     """Run full search pipeline on input text. Returns (result, symbol_table)."""
     st = SymbolTable()
     parsed = parse_input(input_text, st)
-    usable, sos = _deny_goals(parsed, st)
+    usable, sos, _denied = _deny_goals(parsed, st)
     opts = SearchOptions(
         max_given=max_given,
         max_seconds=max_seconds,
@@ -121,7 +121,7 @@ end_of_list.
         )
         assert arg.is_constant, "Skolemized variable should be a constant"
         name = st.sn_to_str(arg.symnum)
-        assert name.startswith("c"), f"Skolem constant should be named c*, got {name}"
+        assert name.startswith("_sk"), f"Skolem constant should be named c*, got {name}"
 
     def test_equality_goal_both_sides_skolemized(self):
         """Goal x = y must produce -(c1 = c2), NOT -(x = y).
@@ -253,7 +253,7 @@ end_of_list.
         assert not arg1.is_variable, "Variable x should be Skolemized"
         assert arg1.is_constant
         name = st.sn_to_str(arg1.symnum)
-        assert name.startswith("c"), f"Expected Skolem constant c*, got {name}"
+        assert name.startswith("_sk"), f"Expected Skolem constant c*, got {name}"
 
     def test_disjunctive_goal_all_variables_skolemized(self):
         """Goal P(x) | Q(y) -> -P(c1) | -Q(c2): both vars Skolemized."""

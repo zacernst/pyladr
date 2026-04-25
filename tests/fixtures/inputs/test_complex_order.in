@@ -1,0 +1,25 @@
+% More complex test to see clause order differences
+formulas(sos).
+  % Target chain: a -> b -> c -> d -> goal
+  f(a) = b.
+  f(b) = c.
+  f(c) = d.
+  f(d) = target.
+
+  % Many unrelated clauses that could interfere
+  g(x1) = h(x1).
+  g(x2) = h(x2).
+  g(x3) = h(x3).
+  g(x4) = h(x4).
+  g(x5) = h(x5).
+
+  % Large weight clause
+  P(x,y,z,w,v,u) -> Q(x,y,z,w,v,u,t).
+
+  % Start with a
+  f(start) = a.
+end_of_list.
+
+formulas(goals).
+  f(f(f(f(f(start))))) = target.
+end_of_list.

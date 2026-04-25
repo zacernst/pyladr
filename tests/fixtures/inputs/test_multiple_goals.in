@@ -1,0 +1,13 @@
+set(auto).
+assign(max_proofs, 3).
+
+formulas(sos).
+P(x) | Q(x).
+-P(a).
+end_of_list.
+
+formulas(goals).
+Q(a).
+R(b).
+S(c).
+end_of_list.

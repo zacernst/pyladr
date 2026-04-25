@@ -225,14 +225,22 @@ def _try_demod_lhs(
     dtype: DemodType,
     symbol_table: SymbolTable,
     lex_order_vars: bool,
+    ctx: Context | None = None,
+    trail: Trail | None = None,
 ) -> Term | None:
-    """Try left-to-right rewrite: match alpha against t, replace with beta."""
+    """Try left-to-right rewrite: match alpha against t, replace with beta.
+
+    Optionally accepts pre-allocated Context/Trail for reuse (avoids allocation
+    in hot loops). Caller must ensure trail has been undo()'d between calls.
+    """
     atom = clause.literals[0].atom
     alpha = atom.args[0]
     beta = atom.args[1]
 
-    ctx = Context()
-    trail = Trail()
+    if ctx is None:
+        ctx = Context()
+    if trail is None:
+        trail = Trail()
     if match(alpha, ctx, t, trail):
         contractum = apply_demod(beta, ctx)
         trail.undo()
@@ -251,8 +259,13 @@ def _try_demod_rhs(
     dtype: DemodType,
     symbol_table: SymbolTable,
     lex_order_vars: bool,
+    ctx: Context | None = None,
+    trail: Trail | None = None,
 ) -> Term | None:
-    """Try right-to-left rewrite: match beta against t, replace with alpha."""
+    """Try right-to-left rewrite: match beta against t, replace with alpha.
+
+    Optionally accepts pre-allocated Context/Trail for reuse.
+    """
     if dtype not in (DemodType.LEX_DEP_RL, DemodType.LEX_DEP_BOTH):
         return None
 
@@ -260,8 +273,10 @@ def _try_demod_rhs(
     alpha = atom.args[0]
     beta = atom.args[1]
 
-    ctx = Context()
-    trail = Trail()
+    if ctx is None:
+        ctx = Context()
+    if trail is None:
+        trail = Trail()
     if match(beta, ctx, t, trail):
         contractum = apply_demod(alpha, ctx)
         trail.undo()
@@ -296,87 +311,189 @@ def demodulate_term(
         of (demod_id, position, direction) triples.
     """
     steps: list[tuple[int, int, int]] = []
-    result = _demod_term_recursive(
+    result = _demod_term_iterative(
         t, demod_index, symbol_table, lex_order_vars, steps, step_limit,
     )
     return result, steps
 
 
-def _demod_term_recursive(
-    t: Term,
+def _demod_term_iterative(
+    root: Term,
     demod_index: DemodulatorIndex,
     symbol_table: SymbolTable,
     lex_order_vars: bool,
     steps: list[tuple[int, int, int]],
     remaining_steps: int,
 ) -> Term:
-    """Recursively demodulate a term bottom-up.
+    """Iteratively demodulate a term bottom-up using an explicit stack.
 
-    Matches C demod()'s recursive structure:
-    1. Demodulate subterms (post-order)
+    Semantically equivalent to the original recursive algorithm:
+    1. Demodulate subterms (post-order traversal)
     2. Try matching against demodulators at current node
-    3. If rewritten, recursively demodulate result
+    3. If rewritten, re-demodulate the result bottom-up
+
+    Uses an explicit work stack instead of Python call stack, eliminating
+    RecursionError on deep terms and reducing function call overhead.
     """
-    if remaining_steps <= 0 or t.is_variable:
-        return t
+    if remaining_steps <= 0 or root.is_variable:
+        return root
 
-    # Demodulate subterms first (bottom-up)
-    if t.is_complex:
-        new_args = []
-        changed = False
-        for arg in t.args:
-            new_arg = _demod_term_recursive(
-                arg, demod_index, symbol_table, lex_order_vars,
-                steps, remaining_steps,
-            )
-            remaining_steps -= len(steps)  # rough tracking
-            new_args.append(new_arg)
-            if new_arg is not arg:
-                changed = True
+    return _demod_bottom_up(
+        root, demod_index, symbol_table, lex_order_vars, steps, remaining_steps,
+    )
 
-        if changed:
-            t = Term(private_symbol=t.private_symbol, arity=t.arity, args=tuple(new_args))
 
-    # Now try to rewrite at the current node using indexed lookup
-    if not t.is_variable:
-        rewritten = True
-        while rewritten and remaining_steps > 0:
-            rewritten = False
+def _demod_bottom_up(
+    root: Term,
+    demod_index: DemodulatorIndex,
+    symbol_table: SymbolTable,
+    lex_order_vars: bool,
+    steps: list[tuple[int, int, int]],
+    remaining_steps: int,
+) -> Term:
+    """Bottom-up demodulation using explicit post-order stack.
 
-            # Try LHS candidates (left-to-right matching)
-            for clause, dtype in demod_index.find_lhs_candidates(t):
-                result = _try_demod_lhs(t, clause, dtype, symbol_table, lex_order_vars)
-                if result is not None:
-                    direction = 1
-                    steps.append((clause.id, 0, direction))
-                    remaining_steps -= 1
-                    t = result
-                    rewritten = True
-                    t = _demod_term_recursive(
-                        t, demod_index, symbol_table, lex_order_vars,
-                        steps, remaining_steps,
-                    )
-                    break
+    Two-phase iterative algorithm (avoids RecursionError on deep terms):
 
-            if rewritten:
-                continue
+      work_stack entries are (term, phase) pairs:
+        Phase 0 — EXPAND: push children right-to-left onto work_stack,
+                  then re-push self with phase=1.
+        Phase 1 — PROCESS: pop N children results from result_stack,
+                  rebuild the node if any child changed, then try to
+                  rewrite at this node using the demodulator index.
+                  If rewriting succeeds, push the result back as phase 0
+                  for full re-demodulation.
 
-            # Try RHS candidates (right-to-left matching)
-            for clause, dtype in demod_index.find_rhs_candidates(t):
-                result = _try_demod_rhs(t, clause, dtype, symbol_table, lex_order_vars)
-                if result is not None:
-                    direction = 2
-                    steps.append((clause.id, 0, direction))
-                    remaining_steps -= 1
-                    t = result
-                    rewritten = True
-                    t = _demod_term_recursive(
-                        t, demod_index, symbol_table, lex_order_vars,
-                        steps, remaining_steps,
-                    )
-                    break
+      Example for f(g(a), b):
+        work:   [(f(g(a),b), 0)]
+        → push  [(f(g(a),b), 1), (b, 0), (g(a), 0)]
+        → b is constant → result_stack=[b], work=[(f,..,1), (g(a),0)]
+        → expand g(a) → [(f,..,1), (g(a),1), (a,0)]
+        → a → result=[b, a], process g(a) → result=[b, g(a')]
+        → process f → pop [b, g(a')], rebuild, try rewrite → result=[f(g(a'),b)]
 
-    return t
+    Allocates a single Context/Trail pair and reuses it across all rewrite
+    attempts to minimize allocation overhead in the hot loop.
+    """
+    # Pre-allocate match context/trail for reuse across all rewrite attempts
+    reuse_ctx = Context()
+    reuse_trail = Trail()
+
+    # Post-order stack: (term, phase)
+    #   phase 0: push children right-to-left, then re-push self with phase 1
+    #   phase 1: children are done (results on result_stack), process this node
+    work_stack: list[tuple[Term, int]] = [(root, 0)]
+    result_stack: list[Term] = []
+
+    while work_stack:
+        if remaining_steps <= 0:
+            # Exhaust remaining stack, returning terms as-is
+            for term, phase in reversed(work_stack):
+                if phase == 0:
+                    result_stack.append(term)
+            break
+
+        term, phase = work_stack.pop()
+
+        if term.is_variable:
+            result_stack.append(term)
+            continue
+
+        if phase == 0:
+            if not term.is_complex:
+                # Constant: no children, try demodulation directly
+                work_stack.append((term, 1))
+            else:
+                # Push self back for phase 1 processing after children
+                work_stack.append((term, 1))
+                # Push children right-to-left so left child processed first
+                for i in range(term.arity - 1, -1, -1):
+                    child = term.args[i]
+                    if child.is_variable:
+                        result_stack.append(child)
+                    else:
+                        work_stack.append((child, 0))
+            continue
+
+        # Phase 1: all children processed, results on result_stack
+        if term.is_complex:
+            # Pop children results (they were pushed left-to-right onto result_stack)
+            n = term.arity
+            new_args_list = result_stack[-n:]
+            del result_stack[-n:]
+            new_args = tuple(new_args_list)
+
+            changed = any(new_args[i] is not term.args[i] for i in range(n))
+            if changed:
+                term = Term(
+                    private_symbol=term.private_symbol,
+                    arity=term.arity,
+                    args=new_args,
+                )
+
+        # Try rewriting at this node (reuses pre-allocated ctx/trail)
+        rewritten_term, remaining_steps = _try_rewrite_at_node(
+            term, demod_index, symbol_table, lex_order_vars,
+            steps, remaining_steps, reuse_ctx, reuse_trail,
+        )
+
+        if rewritten_term is not term:
+            # Rewrite succeeded — push result for full re-demodulation
+            if rewritten_term.is_variable or remaining_steps <= 0:
+                result_stack.append(rewritten_term)
+            else:
+                work_stack.append((rewritten_term, 0))
+        else:
+            result_stack.append(term)
+
+    return result_stack[0] if result_stack else root
+
+
+def _try_rewrite_at_node(
+    t: Term,
+    demod_index: DemodulatorIndex,
+    symbol_table: SymbolTable,
+    lex_order_vars: bool,
+    steps: list[tuple[int, int, int]],
+    remaining_steps: int,
+    _ctx: Context | None = None,
+    _trail: Trail | None = None,
+) -> tuple[Term, int]:
+    """Try to rewrite a term at the top level using demodulators.
+
+    Tries LHS candidates first, then RHS candidates.
+    Returns (rewritten_term, remaining_steps) if rewritten,
+    or (original_term, remaining_steps) if no rewrite applies.
+
+    Reuses a single Context/Trail pair across all candidate matches
+    to avoid repeated allocation in the hot path.
+    """
+    if t.is_variable or remaining_steps <= 0:
+        return t, remaining_steps
+
+    # Allocate once, reuse across all candidates
+    if _ctx is None:
+        _ctx = Context()
+    if _trail is None:
+        _trail = Trail()
+
+    # Try LHS candidates (left-to-right matching)
+    for clause, dtype in demod_index.find_lhs_candidates(t):
+        result = _try_demod_lhs(t, clause, dtype, symbol_table, lex_order_vars, _ctx, _trail)
+        if result is not None:
+            steps.append((clause.id, 0, 1))
+            remaining_steps -= 1
+            return result, remaining_steps
+
+    # Try RHS candidates (right-to-left matching)
+    for clause, dtype in demod_index.find_rhs_candidates(t):
+        result = _try_demod_rhs(t, clause, dtype, symbol_table, lex_order_vars, _ctx, _trail)
+        if result is not None:
+            steps.append((clause.id, 0, 2))
+            remaining_steps -= 1
+            return result, remaining_steps
+
+    return t, remaining_steps
 
 
 def demodulate_clause(
@@ -444,7 +561,7 @@ def demodulate_clause(
 def back_demodulatable(
     new_demod: Clause,
     dtype: DemodType,
-    clauses: list[Clause],
+    clauses,
     symbol_table: SymbolTable,
     lex_order_vars: bool = False,
 ) -> list[Clause]:
@@ -456,7 +573,7 @@ def back_demodulatable(
     Args:
         new_demod: The new demodulator clause.
         dtype: Type of the demodulator.
-        clauses: List of kept clauses to check.
+        clauses: Iterable of kept clauses to check.
         symbol_table: Symbol table.
         lex_order_vars: Whether to use lex ordering for variables.
 
@@ -496,20 +613,17 @@ def _subterm_matches_demod(
 ) -> bool:
     """Check if any subterm of t matches the demodulator.
 
-    Recursively checks all subterms for a match.
+    Uses iterative traversal to avoid RecursionError on deep terms.
     """
-    if t.is_variable:
-        return False
-
-    # Check current term
-    if _matches_demod_at(t, alpha, beta, dtype, symbol_table, lex_order_vars):
-        return True
-
-    # Recurse into subterms
-    return any(
-        _subterm_matches_demod(arg, alpha, beta, dtype, symbol_table, lex_order_vars)
-        for arg in t.args
-    )
+    work: list[Term] = [t]
+    while work:
+        node = work.pop()
+        if node.is_variable:
+            continue
+        if _matches_demod_at(node, alpha, beta, dtype, symbol_table, lex_order_vars):
+            return True
+        work.extend(node.args)
+    return False
 
 
 def _matches_demod_at(

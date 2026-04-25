@@ -871,7 +871,7 @@ parsed = parser.parse_input(text)
 num_goals = len(parsed.goals)
 num_sos_before = len(parsed.sos)
 
-usable, sos = _deny_goals(parsed, st)
+usable, sos, _denied = _deny_goals(parsed, st)
 
 # The denied goals are the new clauses appended to sos
 denied_clauses = sos[num_sos_before:]

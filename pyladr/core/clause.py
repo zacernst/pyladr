@@ -152,6 +152,14 @@ class Clause:
     initial: bool = False
     subsumer: bool = False
 
+    # Selection annotation: rule name used when this clause was selected as given
+    # (e.g. "W", "A", "T2V", "F", "E"). Empty string if never selected as given.
+    given_selection: str = ""
+
+    # Cosine distance to nearest goal at the time this clause was selected as given.
+    # 0.0 means not set (clause was never selected, or goal-distance disabled).
+    given_distance: float = 0.0
+
     # Cached property — set in __post_init__, avoids repeated len() calls
     _num_literals: int = 0
 

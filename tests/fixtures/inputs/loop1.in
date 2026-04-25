@@ -1,0 +1,29 @@
+set(auto).
+
+
+formulas(usable).
+1 * x = x.
+x * 1 = x.
+x \ x * y = y.
+x * x \ y = y.
+x * y / y = x.
+x / y * y = x.
+x * y * z \ x * y * z = a(x,y,z) # label("associator").
+x * y \ y * x = K(y,x) # label("commutator").
+x * y \ x * y * z = L(z,y,x).
+x * y * z / y * z = R(x,y,z).
+x \ y * x = T(y,x).
+T(T(x,y),z) = T(T(x,z),y).
+T(L(x,y,z),u) = L(T(x,u),y,z).
+T(R(x,y,z),u) = R(T(x,u),y,z).
+L(R(x,y,z),u,v) = R(L(x,u,v),y,z).
+L(L(x,y,z),u,v) = L(L(x,u,v),y,z).
+R(R(x,y,z),u,v) = R(R(x,u,v),y,z).
+end_of_list.
+
+formulas(sos).
+
+x * y * x * z = x * y * x * z # label("Moufang").
+a(K(c,d),e,f) != 1 # label("aK1").
+end_of_list.
+

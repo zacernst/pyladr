@@ -1,0 +1,20 @@
+set(auto).
+
+formulas(sos).
+% Complex problem that will generate many inferences
+P(f(x)).
+P(f(y)) | Q(x, y).
+-P(f(z)) | R(z, w).
+Q(a, b).
+Q(b, c).
+R(a, d) | S(d).
+-S(e) | T(e, f).
+U(g) | V(g).
+-U(h) | W(h).
+-V(i) | X(i).
+W(j) & X(j) -> Y(j).
+end_of_list.
+
+formulas(goals).
+Y(k).
+end_of_list.

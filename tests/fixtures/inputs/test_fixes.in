@@ -1,0 +1,10 @@
+set(auto).
+assign(max_proofs, 1).
+
+formulas(sos).
+P(x) | -P(x).
+end_of_list.
+
+formulas(goals).
+$FALSE.
+end_of_list.

@@ -356,11 +356,42 @@ class SearchOptions:
     learn_from_back_subsumption: bool = False
     learn_from_forward_subsumption: bool = False
 
+    # Penalty propagation
+    penalty_propagation: bool = False
+    penalty_propagation_mode: str = "additive"
+    penalty_propagation_decay: float = 0.5
+    penalty_propagation_threshold: float = 5.0
+    penalty_propagation_max_depth: int = 3
+    penalty_propagation_max: float = 20.0
+
+    # Subformula repetition penalty
+    repetition_penalty: bool = False
+    repetition_penalty_weight: float = 2.0
+    repetition_penalty_min_size: int = 2
+    repetition_penalty_max: float = 15.0
+    repetition_penalty_normalize: bool = False
+
+    # Nucleus unification penalty
+    nucleus_unification_penalty: bool = False
+    nucleus_penalty_threshold: float = 3.0
+    nucleus_penalty_weight: float = 1.5
+    nucleus_penalty_max: float = 15.0
+    nucleus_penalty_cache_size: int = 10000
+
+    # Penalty weight adjustment
+    penalty_weight_enabled: bool = False
+    penalty_weight_mode: str = "exponential"
+    penalty_weight_threshold: float = 5.0
+    penalty_weight_multiplier: float = 2.0
+    penalty_weight_max: float = 1000.0
+
     # Output
     print_given: bool = True
     print_kept: bool = False
     quiet: bool = False
 ```
+
+> See the [Penalty Weight Guide](PENALTY_WEIGHT_GUIDE.md) for detailed usage.
 
 ### `SearchResult` / `Proof`
 
@@ -396,11 +427,138 @@ class ExitCode(IntEnum):
 
 Tracks clause counts and timing during search.
 
+**Counters:**
 - `given` — Number of given clauses selected
 - `generated` — Total inferences generated
 - `kept` — Clauses retained after filtering
 - `deleted` — Clauses removed by subsumption/weight
+
+**Timing:**
 - `elapsed_seconds()` — Wall-clock time since search start
+
+**Per-Given-Clause Inference Tracking:**
+
+Tracks how many clauses each given clause generated, enabling analysis of which
+given clauses were most productive during search.
+
+- `begin_given(clause_id)` — Start tracking inferences for a given clause
+- `record_generated()` — Record one generated clause (increments both global and per-given counters)
+- `get_given_inference_count(clause_id) -> int` — Get inference count for a specific given clause
+- `top_given_clauses(n=10) -> list[tuple[int, int]]` — Top-N most productive given clauses by count
+- `given_inference_counts` — Raw dict mapping clause ID → inference count
+
+```python
+result = search.run(usable=[], sos=clauses)
+# Which given clause generated the most inferences?
+for clause_id, count in result.stats.top_given_clauses(5):
+    print(f"Clause {clause_id}: {count} inferences")
+# Total consistency: sum(per-given) == stats.generated
+```
+
+### Penalty Weight Modules
+
+**Module:** `pyladr.search.penalty_weight`
+
+```python
+class PenaltyWeightMode(Enum):
+    LINEAR = auto()       # adjusted = base + multiplier * penalty
+    EXPONENTIAL = auto()  # adjusted = base * multiplier^(penalty / threshold)
+    STEP = auto()         # adjusted = base * multiplier (flat boost)
+
+@dataclass(frozen=True, slots=True)
+class PenaltyWeightConfig:
+    enabled: bool = False
+    threshold: float = 5.0
+    multiplier: float = 2.0
+    max_adjusted_weight: float = 1000.0
+    mode: PenaltyWeightMode = PenaltyWeightMode.EXPONENTIAL
+
+def penalty_adjusted_weight(
+    base_weight: float, penalty: float, config: PenaltyWeightConfig
+) -> float: ...
+```
+
+**Module:** `pyladr.search.penalty_propagation`
+
+```python
+class PenaltyCombineMode(Enum):
+    ADDITIVE = auto()       # child = own + decay * parent_penalty
+    MULTIPLICATIVE = auto() # child = own * (1 + decay * parent_penalty)
+    MAX = auto()            # child = max(own, decay * parent_penalty)
+
+@dataclass(frozen=True, slots=True)
+class PenaltyPropagationConfig:
+    enabled: bool = False
+    mode: PenaltyCombineMode = PenaltyCombineMode.ADDITIVE
+    decay: float = 0.5
+    threshold: float = 5.0
+    max_depth: int = 3
+    max_penalty: float = 20.0
+
+def compute_and_cache_penalty(
+    clause: Clause, cache: PenaltyCache, all_clauses: dict[int, Clause], ...
+) -> PenaltyRecord: ...
+```
+
+**Module:** `pyladr.search.repetition_penalty`
+
+```python
+@dataclass(frozen=True, slots=True)
+class RepetitionPenaltyConfig:
+    enabled: bool = False
+    base_penalty: float = 2.0
+    min_subterm_size: int = 2
+    max_penalty: float = 15.0
+    normalize_variables: bool = False
+
+def compute_repetition_penalty(
+    clause: Clause, config: RepetitionPenaltyConfig
+) -> float: ...
+```
+
+**Module:** `pyladr.search.nucleus_penalty`
+
+```python
+@dataclass(frozen=True, slots=True)
+class NucleusUnificationPenaltyConfig:
+    enabled: bool = False
+    base_penalty: float = 5.0
+    variable_weight: float = 1.0
+    nested_var_weight: float = 0.5
+    ground_weight: float = 0.0
+    multi_literal_boost: float = 1.5
+    min_negative_literals: int = 1
+    threshold: float = 0.3
+    max_penalty: float = 20.0
+
+def compute_nucleus_unification_penalty(
+    clause: Clause, config: NucleusUnificationPenaltyConfig
+) -> float: ...
+```
+
+**Module:** `pyladr.search.nucleus_patterns`
+
+```python
+@dataclass(frozen=True, slots=True)
+class NucleusPattern:
+    predicate_symbol: int
+    arity: int
+    literal_hash: str
+    arg_complexity: int
+    subsumption_template: tuple[str, ...]
+    source_clause_id: int
+
+class NucleusPatternCache:
+    def __init__(self, max_size: int = 50_000) -> None: ...
+    def add(self, pattern: NucleusPattern) -> bool: ...
+    def get_by_predicate(self, predicate_symbol: int) -> list[NucleusPattern]: ...
+    def has_predicate(self, predicate_symbol: int) -> bool: ...
+    def clear(self) -> int: ...
+    stats: PatternCacheStats  # hits, misses, evictions, hit_rate
+
+def extract_patterns(clause: Clause) -> list[NucleusPattern]: ...
+def cache_nucleus_patterns(clause: Clause, cache: NucleusPatternCache) -> int: ...
+```
 
 ### `GivenSelection`
 

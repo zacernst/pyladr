@@ -4,36 +4,33 @@ version = "0.1.0"
 description = "Python 3.14 free-threaded clone of Prover9/LADR automated theorem proving system"
 readme = "README.md"
 license = "GPL-2.0-only"
-requires-python = ">=3.13"
-authors = [
-    { name = "Prover9 Python Team" },
+requires-python = ">=3.14"
+authors = [{ name = "Prover9 Python Team" }]
+keywords = [
+  "theorem-proving",
+  "automated-reasoning",
+  "first-order-logic",
+  "prover9",
 ]
-keywords = ["theorem-proving", "automated-reasoning", "first-order-logic", "prover9"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
-    "Typing :: Typed",
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+  "Typing :: Typed",
 ]
 
 dependencies = [
+    "jupyter>=1.1.1",
     "pydantic>=2.11",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.3",
-    "pytest-cov>=6.1",
-    "pytest-xdist>=3.5",
-    "hypothesis>=6.122",
-    "mypy>=1.15,<1.16",
-    "ruff>=0.11",
-    "black>=25.1",
-    "pre-commit>=4.2",
-]
+ml = ["torch>=2.11", "torch-geometric>=2.7"]
+# Run build_cpp.sh to compile the C++ extension
+cpp = ["pybind11>=2.12"]
 
 [project.scripts]
 pyprover9 = "pyladr.cli:main"
@@ -71,14 +68,16 @@ pydirectproof = "pyladr.apps.directproof:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
-    "pytest-cov>=6.1",
-    "pytest-xdist>=3.5",
-    "hypothesis>=6.122",
-    "mypy>=1.15,<1.16",
-    "ruff>=0.11",
-    "black>=25.1",
-    "pre-commit>=4.2",
+  "pytest>=8.3",
+  "pytest-cov>=6.1",
+  "pytest-xdist>=3.5",
+  "hypothesis>=6.122",
+  "mypy>=1.15,<1.16",
+  "ruff>=0.11",
+  "pre-commit>=4.2",
+  "pybind11>=2.12",
+  "scikit-learn>=1.8.0",
+  "matplotlib>=3.10.8",
 ]
 
 [build-system]
@@ -95,23 +94,23 @@ line-length = 100
 
 [tool.ruff.lint]
 select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "N",      # pep8-naming
-    "UP",     # pyupgrade
-    "B",      # flake8-bugbear
-    "SIM",    # flake8-simplify
-    "TCH",    # flake8-type-checking
-    "RUF",    # ruff-specific rules
-    "PTH",    # flake8-use-pathlib
-    "PL",     # pylint
-    "PERF",   # perflint
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "N",    # pep8-naming
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "TCH",  # flake8-type-checking
+  "RUF",  # ruff-specific rules
+  "PTH",  # flake8-use-pathlib
+  "PL",   # pylint
+  "PERF", # perflint
 ]
 ignore = [
-    "PLR0913",  # too many arguments — acceptable for complex theorem prover constructors
-    "PLR2004",  # magic value comparison — unavoidable in algorithm code
+  "PLR0913", # too many arguments — acceptable for complex theorem prover constructors
+  "PLR2004", # magic value comparison — unavoidable in algorithm code
 ]
 
 [tool.ruff.lint.isort]
@@ -140,23 +139,20 @@ warn_required_dynamic_aliases = true
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = [
-    "-ra",
-    "--strict-markers",
-    "--strict-config",
-    "-x",
-    "--tb=short",
-]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--tb=short"]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks integration tests requiring C reference binary",
-    "cross_validation: marks cross-validation tests comparing Python vs C output",
-    "property: marks property-based tests using Hypothesis",
-    "benchmark: marks performance benchmark tests",
-    "requires_models: marks tests that need core data models to be implemented",
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: marks integration tests requiring C reference binary",
+  "cross_validation: marks cross-validation tests comparing Python vs C output",
+  "property: marks property-based tests using Hypothesis",
+  "benchmark: marks performance benchmark tests",
+  "requires_models: marks tests that need core data models to be implemented",
+  "compatibility: marks compatibility tests for C Prover9 behavioral equivalence",
 ]
 filterwarnings = [
-    "error",
+  "error",
+  "ignore::DeprecationWarning:torch",
+  "ignore::DeprecationWarning:torch_geometric",
 ]
 
 # ── Coverage ──────────────────────────────────────────────────────────────────
@@ -169,8 +165,8 @@ show_missing = true
 skip_empty = true
 fail_under = 80
 exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "if __name__ == .__main__.",
-    "@overload",
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.",
+  "@overload",
 ]

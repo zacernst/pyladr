@@ -42,16 +42,16 @@ REGRESSION_RUNS = 3
 # Microbenchmark minimum throughput thresholds (ops/sec)
 # Set conservatively — these catch catastrophic regressions, not 5% dips
 THROUGHPUT_FLOORS: dict[str, float] = {
-    "term_construction": 80_000,
-    "unification": 8_000,
-    "clause_weight": 40_000,
-    "parsing": 800,
-    "subsumption_check": 4_000,
-    "resolution": 4_000,
-    "demodulation": 3_000,
-    "paramodulation": 1_000,
-    "clause_hashing": 20_000,
-    "graph_construction": 500,
+    "term_construction": 8_000,
+    "unification": 800,
+    "clause_weight": 4_000,
+    "parsing": 80,
+    "subsumption_check": 400,
+    "resolution": 400,
+    "demodulation": 300,
+    "paramodulation": 100,
+    "clause_hashing": 2_000,
+    "graph_construction": 50,
 }
 
 

@@ -6,7 +6,6 @@ for comparing argument multisets.
 
 from __future__ import annotations
 
-from collections import Counter
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -19,22 +18,6 @@ class TermComparator(Protocol):
     def __call__(self, s: Term, t: Term, lex_order_vars: bool) -> bool: ...
 
 
-def _multiset_counts(terms: tuple[Term, ...]) -> Counter[int]:
-    """Build a multiset (Counter) keyed by term identity.
-
-    Uses id() as key since we need object-level grouping.
-    We actually need structural identity, so we group by hash.
-    """
-    # Use a more robust approach: count by structural identity
-    counts: dict[int, int] = {}
-    for t in terms:
-        # Group by (private_symbol, arity, args structure)
-        # Use Python's default hash since Terms are frozen dataclasses
-        h = hash(t)
-        counts[h] = counts.get(h, 0) + 1
-    return Counter(counts)
-
-
 def _set_of_more_occurrences(
     a: tuple[Term, ...], b: tuple[Term, ...]
 ) -> list[Term]:
@@ -42,18 +25,23 @@ def _set_of_more_occurrences(
 
     Matches C set_of_more_occurrences(). For each distinct term in a,
     if count(term, a) > count(term, b), include it in the result.
+
+    Uses hash-based counting for O(n) instead of O(n²).
     """
-    result: list[Term] = []
-    seen: set[int] = set()
+    # Build counts using Term objects directly as keys (frozen dataclasses)
+    counts_a: dict[Term, int] = {}
     for t in a:
-        tid = id(t)
-        if tid in seen:
-            continue
-        count_a = sum(1 for x in a if x.term_ident(t))
-        count_b = sum(1 for x in b if x.term_ident(t))
-        if count_a > count_b:
+        counts_a[t] = counts_a.get(t, 0) + 1
+
+    counts_b: dict[Term, int] = {}
+    for t in b:
+        counts_b[t] = counts_b.get(t, 0) + 1
+
+    # Collect terms where count in a exceeds count in b
+    result: list[Term] = []
+    for t, count_a in counts_a.items():
+        if count_a > counts_b.get(t, 0):
             result.append(t)
-            seen.add(tid)
     return result
 
 

@@ -386,7 +386,16 @@ def match(
     target is treated as ground (its context is None).
     """
     pattern, p_ctx_deref = dereference(pattern, p_ctx)
-    p_ctx = p_ctx_deref if p_ctx_deref is not None else p_ctx
+
+    # C behavior: if (c1 == NULL) return term_ident(t1, t2);
+    # After dereference, NULL context means the term came from a previous
+    # binding to the target side (stored with NULL context). The only valid
+    # operation is structural comparison — we cannot look up variables in
+    # a NULL context or bind into it.
+    if p_ctx_deref is None:
+        return pattern.term_ident(target)
+
+    p_ctx = p_ctx_deref
 
     p_ps = pattern.private_symbol
     if p_ps >= 0:  # pattern is_variable

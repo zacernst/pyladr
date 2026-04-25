@@ -148,6 +148,11 @@ class GNNEmbeddingProvider:
         self._symbol_table = symbol_table
         self._graph_config = graph_config or ClauseGraphConfig()
         self._device = device
+        # Lock ordering: _model_lock is always acquired BEFORE any cache
+        # lock.  The write path (swap_weights, swap_model, restore_checkpoint)
+        # acquires _model_lock, releases it, then calls cache.on_model_update()
+        # which acquires the cache's internal lock.  This ensures the two locks
+        # are never held simultaneously, preventing deadlocks.
         self._model_lock = threading.RLock()
         self._model_version: int = 0
         self._swap_count: int = 0
@@ -208,6 +213,10 @@ class GNNEmbeddingProvider:
 
         Thread-safe: acquires the model lock to ensure the model is not
         being swapped while a forward pass is in progress.
+
+        Security: validates output tensor for NaN/Inf values and correct
+        dimensions to prevent corrupted embeddings from propagating into
+        selection scoring.
         """
         graphs = batch_clauses_to_heterograph(
             list(clauses), self._symbol_table, self._graph_config
@@ -220,14 +229,14 @@ class GNNEmbeddingProvider:
         with self._model_lock:
             if len(graphs) == 1:
                 data = graphs[0].to(self._device)
-                return self._model.embed_clause(data)
+                result = self._model.embed_clause(data)
+            else:
+                _harmonize_graphs(graphs)
+                batch = Batch.from_data_list(graphs)
+                batch = batch.to(self._device)
+                result = self._model.embed_clause(batch)
 
-            _harmonize_graphs(graphs)
-
-            batch = Batch.from_data_list(graphs)
-            batch = batch.to(self._device)
-
-            return self._model.embed_clause(batch)
+        return _validate_embeddings(result, len(clauses), self.embedding_dim)
 
     # ── Accessors ──────────────────────────────────────────────────────
 
@@ -257,6 +266,21 @@ class GNNEmbeddingProvider:
     def swap_count(self) -> int:
         """Total number of model swaps performed."""
         return self._swap_count
+
+    @property
+    def graph_config(self) -> ClauseGraphConfig:
+        """Graph construction configuration."""
+        return self._graph_config
+
+    @property
+    def device(self) -> str:
+        """PyTorch device string."""
+        return self._device
+
+    @property
+    def model_lock(self) -> threading.RLock:
+        """Model readers-writer lock for thread-safe forward passes."""
+        return self._model_lock
 
     @property
     def stats(self) -> dict:
@@ -327,18 +351,6 @@ class GNNEmbeddingProvider:
         return self._model_version
 
     # ── Model lifecycle ────────────────────────────────────────────────
-
-    def on_model_updated(self) -> None:
-        """Called after the GNN model weights are updated (online learning).
-
-        Invalidates all cached embeddings since they are stale.
-
-        .. deprecated::
-            Prefer ``swap_weights()`` which atomically replaces weights
-            and invalidates the cache in a thread-safe manner.
-        """
-        self._model_version += 1
-        self._cache.on_model_update()
 
     def checkpoint(self) -> dict:
         """Save current model state for potential rollback.
@@ -433,6 +445,64 @@ class GNNEmbeddingProvider:
         )
 
 
+# ── Embedding validation ───────────────────────────────────────────────────
+
+
+def _validate_embeddings(
+    tensor: torch.Tensor,
+    expected_rows: int,
+    expected_dim: int,
+) -> torch.Tensor:
+    """Validate embedding tensor for shape correctness and finite values.
+
+    Replaces any rows containing NaN or Inf with zero vectors rather than
+    allowing corrupted values to propagate into selection scoring. This
+    prevents a corrupted or adversarial model from crashing the search.
+
+    Args:
+        tensor: Raw embedding output from the GNN.
+        expected_rows: Expected number of clause embeddings.
+        expected_dim: Expected embedding dimensionality.
+
+    Returns:
+        Validated tensor with NaN/Inf rows zeroed out.
+    """
+    # Dimension validation
+    if tensor.ndim != 2:
+        logger.warning(
+            "Embedding tensor has %d dims (expected 2), returning zeros",
+            tensor.ndim,
+        )
+        return torch.zeros(expected_rows, expected_dim, device=tensor.device)
+
+    if tensor.shape[0] != expected_rows:
+        logger.warning(
+            "Embedding batch size %d != expected %d, returning zeros",
+            tensor.shape[0], expected_rows,
+        )
+        return torch.zeros(expected_rows, expected_dim, device=tensor.device)
+
+    if tensor.shape[1] != expected_dim:
+        logger.warning(
+            "Embedding dim %d != expected %d, returning zeros",
+            tensor.shape[1], expected_dim,
+        )
+        return torch.zeros(expected_rows, expected_dim, device=tensor.device)
+
+    # Finite value validation — replace NaN/Inf rows with zeros
+    finite_mask = torch.isfinite(tensor).all(dim=1)
+    if not finite_mask.all():
+        bad_count = (~finite_mask).sum().item()
+        logger.warning(
+            "Embedding tensor has %d/%d non-finite rows, replacing with zeros",
+            bad_count, expected_rows,
+        )
+        tensor = tensor.clone()
+        tensor[~finite_mask] = 0.0
+
+    return tensor
+
+
 # ── Graph harmonization helper ─────────────────────────────────────────────
 
 
@@ -507,46 +577,46 @@ class GNNClauseEncoder:
         graphs = batch_clauses_to_heterograph(
             list(clauses),
             self._provider.symbol_table,
-            self._provider._graph_config,
+            self._provider.graph_config,
         )
 
         if not graphs:
             return torch.empty(
                 0, self._provider.embedding_dim,
-                device=self._provider._device,
+                device=self._provider.device,
             )
 
-        with self._provider._model_lock:
-            model = self._provider._model
+        with self._provider.model_lock:
+            model = self._provider.model
 
             if len(graphs) == 1:
-                data = graphs[0].to(self._provider._device)
+                data = graphs[0].to(self._provider.device)
                 return model.forward(data)
 
             _harmonize_graphs(graphs)
             batch = Batch.from_data_list(graphs)
-            batch = batch.to(self._provider._device)
+            batch = batch.to(self._provider.device)
             return model.forward(batch)
 
     # ── Delegate nn.Module-like interface to the underlying model ─────
 
     def parameters(self):
-        return self._provider._model.parameters()
+        return self._provider.model.parameters()
 
     def named_parameters(self):
-        return self._provider._model.named_parameters()
+        return self._provider.model.named_parameters()
 
     def state_dict(self):
-        return self._provider._model.state_dict()
+        return self._provider.model.state_dict()
 
     def load_state_dict(self, state_dict: dict) -> None:
-        self._provider._model.load_state_dict(state_dict)
+        self._provider.model.load_state_dict(state_dict)
 
     def train(self, mode: bool = True):
-        self._provider._model.train(mode)
+        self._provider.model.train(mode)
 
     def eval(self):
-        self._provider._model.eval()
+        self._provider.model.eval()
 
 
 # ── No-op fallback ────────────────────────────────────────────────────────

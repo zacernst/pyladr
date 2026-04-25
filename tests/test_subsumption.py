@@ -10,7 +10,6 @@ from pyladr.core.term import Term, get_rigid_term, get_variable_term
 from pyladr.inference.subsumption import (
     back_subsume_from_lists,
     forward_subsume_from_lists,
-    reset_subsumption_stats,
     subsumes,
 )
 from pyladr.indexing.feature_index import FeatureIndex, FeatureVector
@@ -21,8 +20,8 @@ from pyladr.indexing.feature_index import FeatureIndex, FeatureVector
 
 @pytest.fixture(autouse=True)
 def _reset_stats():
-    """Reset subsumption stats before each test."""
-    reset_subsumption_stats()
+    """No-op: subsumption stats are now per-SearchStatistics instance."""
+    pass
 
 
 @pytest.fixture()

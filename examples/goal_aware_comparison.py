@@ -49,7 +49,7 @@ def analyze_clause_selection_patterns(model_path: str, problem_file: str = "vamp
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
     all_clauses = usable + sos
 
     logger.info(f"📋 Analyzing {len(all_clauses)} initial clauses")

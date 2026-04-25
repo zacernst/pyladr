@@ -58,6 +58,8 @@ class Term:
     container: object = field(default=None, compare=False, hash=False)
     # Unique ID for FPA indexing — not included in hash/eq
     term_id: int = field(default=0, compare=False, hash=False)
+    # Cached symbol count — computed once in __post_init__, O(1) access thereafter
+    _symbol_count: int = field(default=0, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.arity != len(self.args):
@@ -66,6 +68,12 @@ class Term:
             )
         if self.arity > MAX_ARITY:
             raise ValueError(f"Arity {self.arity} exceeds MAX_ARITY ({MAX_ARITY})")
+        # Cache symbol count eagerly: args are already constructed so their
+        # _symbol_count is available. Avoids O(n) recursive recomputation
+        # on every access — critical for _clause_generality_penalty() hot path.
+        object.__setattr__(
+            self, "_symbol_count", 1 + sum(a._symbol_count for a in self.args)
+        )
 
     # ── Type classification (C macros) ────────────────────────────────────
 
@@ -127,6 +135,8 @@ class Term:
             if VARIABLE: return VARNUM(t)
             else: x = SYMNUM(t); for each arg: x = (x << 3) ^ hash(arg); return x
         """
+        # Bitmask to 32-bit unsigned to match C unsigned int overflow semantics.
+        # Required for behavioral equivalence with C hash_term().
         if self.is_variable:
             return self.varnum & 0xFFFFFFFF
         x = self.symnum & 0xFFFFFFFF
@@ -162,32 +172,40 @@ class Term:
         """term_depth(t): depth of term tree."""
         if self.arity == 0:
             return 0
-        return 1 + max(a.depth for a in self.args)
+        return 1 + max((a.depth for a in self.args), default=0)
 
     @property
     def symbol_count(self) -> int:
-        """symbol_count(t): number of nodes in term tree."""
-        return 1 + sum(a.symbol_count for a in self.args)
+        """symbol_count(t): number of nodes in term tree. O(1) cached."""
+        return self._symbol_count
 
     def biggest_variable(self) -> int:
         """biggest_variable(t): largest variable number, or -1 if ground."""
-        if self.is_variable:
-            return self.varnum
-        if self.arity == 0:
-            return -1
-        return max(a.biggest_variable() for a in self.args)
+        result = -1
+        for t in self.subterms():
+            if t.is_variable and t.varnum > result:
+                result = t.varnum
+        return result
 
     def occurs_in(self, t2: Term) -> bool:
         """occurs_in(t1, t2): does self occur as subterm of t2?"""
-        if self.term_ident(t2):
-            return True
-        return any(self.occurs_in(a) for a in t2.args)
+        stack: list[Term] = [t2]
+        while stack:
+            node = stack.pop()
+            if self.term_ident(node):
+                return True
+            stack.extend(node.args)
+        return False
 
     def subterms(self) -> Iterator[Term]:
-        """Iterate all subterms (pre-order traversal)."""
-        yield self
-        for a in self.args:
-            yield from a.subterms()
+        """Iterate all subterms (pre-order traversal, iterative)."""
+        stack: list[Term] = [self]
+        while stack:
+            t = stack.pop()
+            yield t
+            # Push args in reverse order so leftmost child is yielded first
+            for i in range(t.arity - 1, -1, -1):
+                stack.append(t.args[i])
 
     def variables(self) -> set[int]:
         """Set of variable numbers occurring in this term."""
@@ -206,12 +224,21 @@ class Term:
         With a symbol table, uses proper symbol names.
         """
         if self.is_variable:
+            if symbol_table is not None:
+                _STD_VAR_NAMES = ("x", "y", "z", "u", "v", "w")
+                vn = self.varnum
+                if vn < len(_STD_VAR_NAMES):
+                    return _STD_VAR_NAMES[vn]
+                return f"v{vn}"
             return f"v{self.varnum}"
         if symbol_table is not None:
             from pyladr.core.symbol import SymbolTable
 
             assert isinstance(symbol_table, SymbolTable)
-            name = symbol_table.id_to_name(self.symnum)
+            try:
+                name = symbol_table.id_to_name(self.symnum)
+            except KeyError:
+                name = f"s{self.symnum}"
         else:
             name = f"s{self.symnum}"
         if self.is_constant:
@@ -251,6 +278,9 @@ def get_variable_term(varnum: int) -> Term:
         t = _variable_cache.get(varnum)
         if t is not None:
             return t
+        # Cap cache size to prevent unbounded memory growth
+        if len(_variable_cache) > 10_000:
+            _variable_cache.clear()
         t = Term(private_symbol=varnum)
         _variable_cache[varnum] = t
         return t

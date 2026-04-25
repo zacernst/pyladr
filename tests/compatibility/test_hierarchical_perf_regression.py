@@ -54,7 +54,7 @@ def _run_perf_python(input_text: str, max_given: int = 200) -> object:
 
     # Apply auto if present
     from pyladr.apps.prover9 import _deny_goals, _apply_settings
-    usable, sos = _deny_goals(parsed, st)
+    usable, sos, _denied = _deny_goals(parsed, st)
     _apply_settings(parsed, opts, st)
 
     search = GivenClauseSearch(options=opts, symbol_table=st)

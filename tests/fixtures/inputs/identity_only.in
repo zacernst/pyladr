@@ -1,8 +1,10 @@
-% Trivial: prove e*e=e from left identity
+% Identity element proof: e*e = e from left identity axiom
+% Tests equational reasoning with paramodulation and demodulation.
+
 formulas(sos).
-  e * x = x.
+f(e,x) = x.
 end_of_list.
 
 formulas(goals).
-  e * e = e.
+f(e,e) = e.
 end_of_list.

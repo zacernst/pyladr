@@ -1,0 +1,16 @@
+set(auto).
+assign(max_given, 5).
+set(print_given).
+clear(auto_inference).
+set(binary_resolution).
+
+formulas(sos).
+P(a).
+P(b).
+-P(x) | -P(y) | Q(x,y).
+-Q(x,y) | R(x).
+end_of_list.
+
+formulas(goals).
+R(a).
+end_of_list.

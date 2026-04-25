@@ -1,0 +1,9 @@
+% Test file to compare - same logic but with constants
+formulas(sos).
+  P(a).
+  P(a) -> Q(a).
+end_of_list.
+
+formulas(goals).
+  Q(a).  % Goal with constant - should be provable
+end_of_list.

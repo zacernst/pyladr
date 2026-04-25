@@ -56,7 +56,7 @@ def demonstrate_training_concept():
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
     initial_clauses = usable + sos
 
     logger.info(f"  Parsed: {len(usable)} usable, {len(sos)} SOS clauses")

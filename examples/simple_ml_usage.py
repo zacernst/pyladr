@@ -105,7 +105,7 @@ def run_with_ml_selection(problem_file: str, model_path: str = None):
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
     print(f"📋 Parsed problem: {len(usable)} usable, {len(sos)} SOS clauses")
 
@@ -196,7 +196,7 @@ def run_traditional(problem_file: str):
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
     # Configure traditional search
     opts = SearchOptions(

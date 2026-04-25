@@ -36,13 +36,13 @@ def runjob(
     if debug:
         print(f"Starting job: {command_and_args}")
 
-    shell = isinstance(command_and_args, str)
+    if isinstance(command_and_args, str):
+        command_and_args = [command_and_args]
     result = subprocess.run(
         command_and_args,
         input=stdin_string,
         capture_output=True,
         text=True,
-        shell=shell,
     )
 
     return (os.getpid(), result.returncode, result.stdout, result.stderr)
@@ -63,7 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     head_fname = args[0]
     interp_fname = args[1]
 
-    if Path(interp_fname).is_file():
+    # Atomic check: exclusive create to avoid TOCTOU race
+    try:
+        _interp_fd = open(interp_fname, "x")  # noqa: SIM115
+        _interp_fd.close()
+        # Remove immediately; we'll write the real content at the end
+        Path(interp_fname).unlink()
+    except FileExistsError:
         sys.stderr.write(f"file {interp_fname} already exists\n")
         return 1
 

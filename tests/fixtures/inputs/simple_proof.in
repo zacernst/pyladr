@@ -1,0 +1,7 @@
+set(auto).
+assign(max_proofs, 1).
+
+formulas(sos).
+P(a).
+-P(a).
+end_of_list.

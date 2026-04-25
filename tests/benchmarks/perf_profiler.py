@@ -302,7 +302,7 @@ def parse_and_setup(
     parser = LADRParser(symbol_table)
     parsed = parser.parse_input(input_text)
 
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
     opts = SearchOptions(
         quiet=quiet,

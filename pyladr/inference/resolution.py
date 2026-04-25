@@ -47,6 +47,28 @@ def binary_resolve(
     Returns:
         Resolvent clause, or None if unification fails.
     """
+    from pyladr.cpp_backend import is_enabled
+    if is_enabled():
+        try:
+            from pyladr._pyladr_core import binary_resolve_lits
+            from pyladr.cpp_utils import py_term_to_cpp, cpp_term_to_py
+            cpp_lits1 = [(lit.sign, py_term_to_cpp(lit.atom)) for lit in c1.literals]
+            cpp_lits2 = [(lit.sign, py_term_to_cpp(lit.atom)) for lit in c2.literals]
+            cpp_result = binary_resolve_lits(cpp_lits1, lit1_idx, cpp_lits2, lit2_idx)
+            if cpp_result is None:
+                return None
+            new_lits = tuple(
+                Literal(sign=sign, atom=cpp_term_to_py(atom))
+                for sign, atom in cpp_result
+            )
+            just = Justification(
+                just_type=JustType.BINARY_RES,
+                clause_ids=(c1.id, c2.id),
+            )
+            return Clause(literals=new_lits, justification=(just,))
+        except Exception:
+            pass  # fall through to pure Python
+
     l1 = c1.literals[lit1_idx]
     l2 = c2.literals[lit2_idx]
 
@@ -111,10 +133,38 @@ def all_binary_resolvents(
     Returns:
         List of resolvent clauses (may be empty).
     """
+    from pyladr.cpp_backend import is_enabled
+    if is_enabled():
+        try:
+            from pyladr._pyladr_core import all_binary_resolvents_lits
+            from pyladr.cpp_utils import py_term_to_cpp, cpp_term_to_py
+            cpp_lits1 = [(lit.sign, py_term_to_cpp(lit.atom)) for lit in c1.literals]
+            cpp_lits2 = [(lit.sign, py_term_to_cpp(lit.atom)) for lit in c2.literals]
+            cpp_results = all_binary_resolvents_lits(cpp_lits1, cpp_lits2)
+            results = []
+            for cpp_result in cpp_results:
+                new_lits = tuple(
+                    Literal(sign=sign, atom=cpp_term_to_py(atom))
+                    for sign, atom in cpp_result
+                )
+                just = Justification(
+                    just_type=JustType.BINARY_RES,
+                    clause_ids=(c1.id, c2.id),
+                )
+                results.append(Clause(literals=new_lits, justification=(just,)))
+            return results
+        except Exception:
+            pass  # fall through to pure Python
+
     resolvents: list[Clause] = []
     for i, l1 in enumerate(c1.literals):
         for j, l2 in enumerate(c2.literals):
             if l1.sign != l2.sign:
+                # Fast symbol pre-check: rigid atoms with different symbols cannot unify
+                atom1, atom2 = l1.atom, l2.atom
+                if (atom1.private_symbol < 0 and atom2.private_symbol < 0
+                        and atom1.private_symbol != atom2.private_symbol):
+                    continue
                 resolvent = binary_resolve(c1, i, c2, j)
                 if resolvent is not None:
                     resolvents.append(resolvent)
@@ -135,6 +185,28 @@ def factor(clause: Clause) -> list[Clause]:
     Returns:
         List of factor clauses (may be empty).
     """
+    from pyladr.cpp_backend import is_enabled
+    if is_enabled():
+        try:
+            from pyladr._pyladr_core import factor_lits
+            from pyladr.cpp_utils import py_term_to_cpp, cpp_term_to_py
+            cpp_lits = [(lit.sign, py_term_to_cpp(lit.atom)) for lit in clause.literals]
+            cpp_results = factor_lits(cpp_lits)
+            results = []
+            for cpp_result in cpp_results:
+                new_lits = tuple(
+                    Literal(sign=sign, atom=cpp_term_to_py(atom))
+                    for sign, atom in cpp_result
+                )
+                just = Justification(
+                    just_type=JustType.FACTOR,
+                    clause_ids=(clause.id,),
+                )
+                results.append(Clause(literals=new_lits, justification=(just,)))
+            return results
+        except Exception:
+            pass  # fall through to pure Python
+
     factors: list[Clause] = []
 
     for i in range(len(clause.literals)):

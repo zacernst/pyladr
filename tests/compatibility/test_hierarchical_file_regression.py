@@ -42,7 +42,7 @@ def _run_python_file(input_path: Path, *, max_given: int = 500) -> tuple[object,
     parser = LADRParser(st)
     parsed = parser.parse_input(input_text)
 
-    usable, sos = _deny_goals(parsed, st)
+    usable, sos, _denied = _deny_goals(parsed, st)
 
     opts = SearchOptions(
         max_given=max_given,
@@ -274,7 +274,7 @@ end_of_list.
         st = SymbolTable()
         parser = LADRParser(st)
         parsed = parser.parse_input(input_text)
-        usable, sos = _deny_goals(parsed, st)
+        usable, sos, _denied = _deny_goals(parsed, st)
 
         opts = SearchOptions(max_given=500, quiet=True, goal_directed=False)
         _apply_settings(parsed, opts, st)

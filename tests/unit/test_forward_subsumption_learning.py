@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Forward subsumption learning is now implemented in GivenClauseSearch
+
 from pyladr.core.clause import Clause, Justification, JustType, Literal
 from pyladr.core.symbol import SymbolTable
 from pyladr.core.term import Term, get_rigid_term, get_variable_term

@@ -1,0 +1,18 @@
+% Debug compatibility bug - should generate many inferences from multiple partnerships
+set(print_given_stats).
+assign(max_given, 15).
+
+formulas(sos).
+  P(a1).
+  P(a2).
+  P(a3).
+  P(a4).
+  P(a5).
+  -P(x) | Q(x).  % This should resolve with all 5 P clauses = 5/5 = 100%
+  Q(b1).
+  Q(b2).
+  -Q(y) | R(y).  % This should resolve with all Q clauses (including generated ones)
+  S(c).
+  T(d).
+  U(e).
+end_of_list.

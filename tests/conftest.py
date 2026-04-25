@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
-
 import pytest
 
 # ── Path fixtures ───────────────────────────────────────────────────────────
@@ -106,20 +104,6 @@ formulas(goals).
   x ^ x = x.
 end_of_list.
 """
-
-
-# ── Term construction helpers ───────────────────────────────────────────────
-
-
-@pytest.fixture
-def make_terms() -> dict[str, Any]:
-    """Factory fixture for creating test terms.
-
-    Returns a dict of helpers. Will be populated once core models exist.
-    Currently returns empty dict as placeholder.
-    """
-    # TODO: Populate when pyladr.core.term is implemented
-    return {}
 
 
 # ── Pytest configuration ────────────────────────────────────────────────────

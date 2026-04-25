@@ -32,7 +32,7 @@ end_of_list.
 
         assert len(parsed.goals) == 1
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         # Should have one denied goal in SOS
         assert len(sos) == 1
@@ -50,7 +50,7 @@ end_of_list.
 
         # Symbol should be a Skolem constant (name starts with 'c')
         sym_name = symbol_table.sn_to_str(arg.symnum)
-        assert sym_name.startswith('c')
+        assert sym_name.startswith('_sk')
 
     def test_goal_multiple_variables(self):
         """Test Skolemization with multiple variables in goal.
@@ -66,7 +66,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         assert len(sos) == 1
         denied = sos[0]
@@ -84,8 +84,8 @@ end_of_list.
         sym0 = symbol_table.sn_to_str(arg0.symnum)
         sym1 = symbol_table.sn_to_str(arg1.symnum)
 
-        assert sym0.startswith('c')
-        assert sym1.startswith('c')
+        assert sym0.startswith('_sk')
+        assert sym1.startswith('_sk')
         # Different constants for different variables
         assert sym0 != sym1
 
@@ -103,7 +103,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         assert len(sos) == 1
         denied = sos[0]
@@ -138,7 +138,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         assert len(sos) == 1
         denied = sos[0]
@@ -153,7 +153,7 @@ end_of_list.
         arg1 = lit.atom.args[1]
         assert arg1.is_constant
         sym1 = symbol_table.sn_to_str(arg1.symnum)
-        assert sym1.startswith('c')
+        assert sym1.startswith('_sk')
 
     def test_goal_disjunction(self):
         """Test Skolemization of disjunctive goals.
@@ -169,7 +169,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         assert len(sos) == 1
         denied = sos[0]
@@ -199,7 +199,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         # Should have two denied goals
         assert len(sos) == 2
@@ -211,8 +211,8 @@ end_of_list.
         sym1 = symbol_table.sn_to_str(denied1.literals[0].atom.args[0].symnum)
         sym2 = symbol_table.sn_to_str(denied2.literals[0].atom.args[0].symnum)
 
-        assert sym1.startswith('c')
-        assert sym2.startswith('c')
+        assert sym1.startswith('_sk')
+        assert sym2.startswith('_sk')
         # Different goals should get different Skolem constants
         assert sym1 != sym2
 
@@ -286,7 +286,7 @@ end_of_list.
 
         assert len(parsed.goals) == 1
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         # Goal denial should produce exactly one clause added to SOS
         assert len(sos) == 5  # 4 original SOS + 1 denied goal
@@ -327,7 +327,7 @@ end_of_list.
 
         assert len(parsed.goals) == 1
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         # Should have the negated goal
         assert len(sos) == 7  # 6 original SOS + 1 denied goal
@@ -348,7 +348,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         denied = sos[0]
         assert len(denied.justification) > 0
@@ -370,7 +370,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         assert len(sos) == 1
         denied = sos[0]
@@ -389,7 +389,7 @@ end_of_list.
 
         f_arg1 = arg0.args[1]  # should be c1
         assert f_arg1.is_constant
-        assert symbol_table.sn_to_str(f_arg1.symnum).startswith('c')
+        assert symbol_table.sn_to_str(f_arg1.symnum).startswith('_sk')
 
     def test_group_theory_goal_match(self):
         """Test that Skolemized group goal matches expected structure."""
@@ -408,7 +408,7 @@ end_of_list.
         symbol_table = SymbolTable()
         parsed = parse_input(input_text, symbol_table)
 
-        usable, sos = _deny_goals(parsed, symbol_table)
+        usable, sos, _denied = _deny_goals(parsed, symbol_table)
 
         # Find the denied goal (should be last)
         denied_goal = sos[-1]
@@ -427,8 +427,8 @@ end_of_list.
         assert left.args[1].is_constant
         left_sym0 = symbol_table.sn_to_str(left.args[0].symnum)
         left_sym1 = symbol_table.sn_to_str(left.args[1].symnum)
-        assert left_sym0.startswith('c')
-        assert left_sym1.startswith('c')
+        assert left_sym0.startswith('_sk')
+        assert left_sym1.startswith('_sk')
 
         # Right side: c2 * c1
         right = eq_atom.args[1]
@@ -437,10 +437,10 @@ end_of_list.
         assert right.args[1].is_constant
         right_sym0 = symbol_table.sn_to_str(right.args[0].symnum)
         right_sym1 = symbol_table.sn_to_str(right.args[1].symnum)
-        assert right_sym0.startswith('c')
-        assert right_sym1.startswith('c')
+        assert right_sym0.startswith('_sk')
+        assert right_sym1.startswith('_sk')
 
         # The Skolem constants should be in reversed order
         # (assuming parser gives vars in order x, y -> c1, c2)
         # and they're used in order on both sides
-        assert left_sym0 != left_sym1 or left_sym0 == "c1"  # at least one is c1
+        assert left_sym0 != left_sym1 or left_sym0 == "_sk1"  # at least one is _sk1

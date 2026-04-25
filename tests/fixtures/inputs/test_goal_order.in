@@ -1,0 +1,20 @@
+% Test case to observe clause selection order
+% Goal: prove Q(d) from chain of implications
+formulas(sos).
+  % Chain: P(a) -> P(b) -> P(c) -> Q(d)
+  P(a) -> P(b).
+  P(b) -> P(c).
+  P(c) -> Q(d).
+
+  % Starting fact
+  P(a).
+
+  % Unrelated heavy clauses that might be selected first by weight
+  R(x) -> S(x,y,z,w).
+  S(x,y,z,w) -> T(x,y,z,w,v).
+  T(x,y,z,w,v) -> U(x,y,z,w,v,u).
+end_of_list.
+
+formulas(goals).
+  Q(d).
+end_of_list.

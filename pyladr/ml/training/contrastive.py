@@ -13,18 +13,21 @@ proving. The framework supports:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import IntEnum, auto
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+
+from pyladr.protocols import ClauseEncoder
 
 if TYPE_CHECKING:
     from pyladr.core.clause import Clause, Justification, JustType
@@ -36,37 +39,10 @@ logger = logging.getLogger(__name__)
 
 # ── Protocols for model abstraction ────────────────────────────────────────
 
-
-@runtime_checkable
-class ClauseEncoder(Protocol):
-    """Protocol for any model that encodes clauses into embedding vectors.
-
-    The contrastive trainer works with any encoder satisfying this interface,
-    decoupling training logic from the specific GNN architecture.
-    """
-
-    def encode_clauses(self, clauses: list[Clause]) -> torch.Tensor:
-        """Encode a batch of clauses into embedding vectors.
-
-        Args:
-            clauses: List of PyLADR Clause objects.
-
-        Returns:
-            Tensor of shape (len(clauses), embedding_dim).
-        """
-        ...
-
-    def parameters(self) -> ...:
-        """Return model parameters for optimizer."""
-        ...
-
-    def train(self, mode: bool = True) -> ...:
-        """Set training/eval mode."""
-        ...
-
-    def eval(self) -> ...:
-        """Set eval mode."""
-        ...
+# Re-exported from pyladr.protocols for backward compatibility.
+# All existing ``from pyladr.ml.training.contrastive import ClauseEncoder``
+# imports continue to work. New code should import from pyladr.protocols.
+__all__ = ["ClauseEncoder"]  # noqa: F811 — re-export
 
 
 # ── Pair labeling ──────────────────────────────────────────────────────────
@@ -209,6 +185,40 @@ class ProofPatternExtractor:
 
         return pairs
 
+    def extract_pairs_split(
+        self,
+        result: SearchResult,
+        all_clauses: dict[int, Clause] | None = None,
+        validation_fraction: float = 0.2,
+        seed: int = 42,
+    ) -> tuple[list[InferencePair], list[InferencePair]]:
+        """Extract inference pairs split into train and validation sets.
+
+        Wraps :meth:`extract_pairs` and deterministically splits the result
+        so that models trained on the training portion can be evaluated on
+        held-out data, preventing overfitting to specific problems.
+
+        Args:
+            result: The SearchResult from a given-clause search.
+            all_clauses: Map of clause_id → Clause for the entire search.
+            validation_fraction: Fraction of pairs to hold out for validation
+                (default 0.2). Must be in [0, 1).
+            seed: Random seed for deterministic splitting.
+
+        Returns:
+            ``(train_pairs, val_pairs)`` tuple.
+        """
+        pairs = self.extract_pairs(result, all_clauses)
+        if not pairs or validation_fraction <= 0.0:
+            return pairs, []
+
+        rng = random.Random(seed)
+        shuffled = list(pairs)
+        rng.shuffle(shuffled)
+
+        split_idx = max(1, int(len(shuffled) * validation_fraction))
+        return shuffled[split_idx:], shuffled[:split_idx]
+
     def _compute_proof_depths(
         self,
         proof: Proof,
@@ -268,6 +278,9 @@ class ProofPatternExtractor:
         from pyladr.core.clause import JustType
 
         if not clause.justification:
+            logger.debug(
+                "Skipping clause %d: no justification", clause.id,
+            )
             return None
 
         primary = clause.justification[0]
@@ -275,12 +288,29 @@ class ProofPatternExtractor:
 
         # Need at least one parent to form a pair
         if not parent_ids:
+            logger.debug(
+                "Skipping clause %d: justification type %s has no parent IDs",
+                clause.id, primary.just_type,
+            )
             return None
+
+        # Validate parent IDs exist in the clause map
+        missing = [pid for pid in parent_ids if pid not in clauses]
+        if missing:
+            logger.warning(
+                "Clause %d references missing parent IDs %s — "
+                "data quality may be degraded",
+                clause.id, missing,
+            )
 
         parent1 = clauses.get(parent_ids[0])
         parent2 = clauses.get(parent_ids[1]) if len(parent_ids) > 1 else None
 
         if parent1 is None:
+            logger.debug(
+                "Skipping clause %d: primary parent %d not found in clause map",
+                clause.id, parent_ids[0],
+            )
             return None
 
         is_productive = clause.id in proof_ids
@@ -955,18 +985,52 @@ class ContrastiveTrainer:
         return loss.item()
 
     def save_checkpoint(self, path: str) -> None:
-        """Save training checkpoint."""
+        """Save training checkpoint.
+
+        Uses secure format: tensor data via torch.save (weights_only
+        compatible), config via JSON sidecar.
+        """
+        from pathlib import Path as _Path
+
+        # Tensor-only checkpoint
         torch.save({
             "step": self._step,
             "encoder_state": self._encoder.state_dict(),
             "optimizer_state": self._optimizer.state_dict() if self._optimizer else None,
             "best_gap": self._best_gap,
-            "config": self._config,
         }, path)
 
+        # Config as JSON sidecar
+        json_path = _Path(path).with_suffix(".config.json")
+        json_data = {
+            "config": asdict(self._config),
+            "format_version": 2,
+        }
+        json_path.write_text(json.dumps(json_data, indent=2), encoding="utf-8")
+
     def load_checkpoint(self, path: str) -> None:
-        """Load training checkpoint."""
-        ckpt = torch.load(path, weights_only=False)
+        """Load training checkpoint.
+
+        Supports both secure v2 format (JSON sidecar + weights_only=True)
+        and legacy v1 format (single pickle) for backward compatibility.
+        """
+        import warnings
+        from pathlib import Path as _Path
+
+        json_path = _Path(path).with_suffix(".config.json")
+
+        if json_path.exists():
+            # Secure v2 format
+            ckpt = torch.load(path, weights_only=True)
+        else:
+            # Legacy v1 format
+            warnings.warn(
+                f"Loading legacy checkpoint format from {path}. "
+                "Re-save with save_checkpoint() to migrate to secure format.",
+                stacklevel=2,
+            )
+            ckpt = torch.load(path, weights_only=False)
+
         self._encoder.load_state_dict(ckpt["encoder_state"])
         self._step = ckpt["step"]
         self._best_gap = ckpt.get("best_gap", float("-inf"))

@@ -101,15 +101,15 @@ class TestCLICommon:
         clause = Clause(literals=())
         assert format_clause_bare(clause) == "$F."
 
-    def test_format_clause_bare_unit(self, eq_sym, a_sym, b_sym):
+    def test_format_clause_bare_unit(self, symbol_table, eq_sym, a_sym, b_sym):
         clause = _make_unit_eq(eq_sym, _make_term(a_sym), _make_term(b_sym))
-        result = format_clause_bare(clause)
+        result = format_clause_bare(clause, symbol_table)
         assert result.endswith(".")
-        assert "=" in result or result  # at least some content
+        assert "=" in result
 
-    def test_format_clause_standard_with_id(self, eq_sym, a_sym, b_sym):
+    def test_format_clause_standard_with_id(self, symbol_table, eq_sym, a_sym, b_sym):
         clause = _make_unit_eq(eq_sym, _make_term(a_sym), _make_term(b_sym), clause_id=1)
-        result = format_clause_standard(clause)
+        result = format_clause_standard(clause, symbol_table)
         assert result.startswith("1 ")
 
     def test_copy_clause_preserves_structure(self, eq_sym, a_sym, b_sym):
@@ -366,18 +366,19 @@ class TestCLIDispatch:
         from pyladr.cli import main
 
         with patch("sys.argv", ["pyprover9", "--help"]):
-            result = main()
-        assert result == 0
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
         output = capsys.readouterr().out
-        assert "renamer" in output
-        assert "prooftrans" in output
+        assert "PyProver9" in output or "pyprover9" in output.lower()
 
     def test_version(self, capsys):
         from pyladr.cli import main
 
         with patch("sys.argv", ["pyprover9", "--version"]):
-            result = main()
-        assert result == 0
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
         output = capsys.readouterr().out
         assert "pyprover9" in output
 

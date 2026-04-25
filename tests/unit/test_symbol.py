@@ -152,4 +152,4 @@ class TestSymbolTableWithTerms:
         a = get_rigid_term(a_sn, 0)
         fxa = get_rigid_term(f_sn, 2, (x, a))
 
-        assert fxa.to_str(st) == "f(v0,a)"
+        assert fxa.to_str(st) == "f(x,a)"

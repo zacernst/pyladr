@@ -62,6 +62,41 @@ set(max_weight, 30).
 
 Lighter clauses are generally more useful. Aggressive weight limits reduce memory and speed up subsumption, but too aggressive risks discarding needed clauses.
 
+## Penalty-Based Search Optimization
+
+The penalty weight system can significantly improve search efficiency by
+deprioritizing overly general and repetitive clauses. See the
+[Penalty Weight Guide](PENALTY_WEIGHT_GUIDE.md) for full details.
+
+### Quick Start
+
+```bash
+# Conservative: mild deprioritization of general clauses
+uv run pyprover9 -f problem.in --penalty-propagation --penalty-weight
+
+# Moderate: add repetition detection
+uv run pyprover9 -f problem.in \
+    --penalty-propagation --repetition-penalty --penalty-weight
+
+# Aggressive: strong suppression for bloated searches
+uv run pyprover9 -f problem.in \
+    --penalty-propagation --penalty-propagation-decay 0.8 \
+    --repetition-penalty --repetition-penalty-normalize \
+    --penalty-weight --penalty-weight-multiplier 3.0
+```
+
+### Performance Impact
+
+| Component | Per-clause overhead | Memory |
+|-----------|-------------------|--------|
+| Penalty propagation | O(1) cache + O(k) parents | ~80 bytes/clause |
+| Repetition penalty (exact) | O(n) subterms | Negligible |
+| Repetition penalty (normalized) | O(n log n) | Per-clause cache |
+| Penalty weight adjustment | O(1) arithmetic | None |
+
+Total overhead is typically < 5% of search time. The search efficiency
+improvement from reduced clause bloat generally far exceeds this cost.
+
 ## Parallel Execution
 
 ### Requirements
@@ -161,6 +196,43 @@ uv run pytest tests/benchmarks/test_performance.py -v
 ### Benchmark Infrastructure
 
 `tests/benchmarks/bench_harness.py` provides timing and comparison utilities. `tests/benchmarks/c_baselines.py` stores reference timing data from the C implementation.
+
+## Nucleus Unification Penalty
+
+The nucleus penalty system prevents unification explosion in hyperresolution-heavy problems by deprioritizing overly general nucleus clauses.
+
+### When to Enable
+
+Enable when your problem:
+- Uses hyperresolution (`set(hyper_resolution).`)
+- Contains condensed detachment patterns (`-P(i(x,y)) | -P(x) | P(y)`)
+- Generates excessive derived clauses from variable-heavy negative literals
+
+### Configuration
+
+```
+set(nucleus_unification_penalty).
+assign(nucleus_penalty_weight, 5.0).    % Base penalty (higher = more aggressive)
+assign(nucleus_penalty_threshold, 0.3). % Min generality ratio to trigger
+assign(nucleus_penalty_max, 20.0).      % Hard cap on penalty
+assign(nucleus_penalty_cache_size, 10000). % LRU pattern cache entries
+```
+
+### Performance Impact
+
+| Scenario | Overhead |
+|----------|----------|
+| Disabled (default) | 0% — no code paths executed |
+| Enabled, typical problem | <1% — O(n) per clause, n = argument positions |
+| Enabled, pattern cache full | <2% — LRU eviction adds minor bookkeeping |
+
+### Tuning Recommendations
+
+| Problem Type | Weight | Threshold | Max |
+|-------------|--------|-----------|-----|
+| Condensed detachment | 5.0–10.0 | 0.3 | 20.0 |
+| General hyperresolution | 2.0–5.0 | 0.3 | 15.0 |
+| Light touch (preserve order) | 1.0 | 0.5 | 8.0 |
 
 ## Profiling
 

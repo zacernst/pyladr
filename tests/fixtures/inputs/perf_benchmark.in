@@ -1,0 +1,24 @@
+% Performance benchmark - generates substantial search work
+% BA5 problem: Boolean algebra identity that requires many steps
+assign(max_seconds, 120).
+assign(max_given, 1000).
+assign(max_kept, 10000).
+
+formulas(sos).
+  x + y = y + x.
+  (x + y) + z = x + (y + z).
+  x * y = y * x.
+  (x * y) * z = x * (y * z).
+  x + (x * y) = x.
+  x * (x + y) = x.
+  x + (y * z) = (x + y) * (x + z).
+  x * (y + z) = (x * y) + (x * z).
+  x + c(x) = 1.
+  x * c(x) = 0.
+  x + 0 = x.
+  x * 1 = x.
+end_of_list.
+
+formulas(goals).
+  c(c(x) * c(y)) * c(c(x) * y) = x.
+end_of_list.

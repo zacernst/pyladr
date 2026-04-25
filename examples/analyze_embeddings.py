@@ -42,7 +42,7 @@ def analyze_embedding_differences():
         input_text = f.read()
 
     parsed = parser.parse_input(input_text)
-    usable, sos = _deny_goals(parsed, symbol_table)
+    usable, sos, _denied = _deny_goals(parsed, symbol_table)
     all_clauses = usable + sos
 
     print(f"📋 Analyzing {len(all_clauses)} clauses from new vampire.in\n")

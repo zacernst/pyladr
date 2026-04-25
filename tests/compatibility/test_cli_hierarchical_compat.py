@@ -111,8 +111,8 @@ class TestExistingCLIParametersUnchanged:
         assert args.ml_weight == 0.4
 
     def test_repetition_bias(self):
-        args, _ = self._parse(["--repetition-bias"])
-        assert args.repetition_bias is True
+        args, _ = self._parse(["--repetition-penalty"])
+        assert args.repetition_penalty is True
 
     def test_input_file(self):
         args, _ = self._parse(["-f", "test.in"])
@@ -162,12 +162,12 @@ class TestCLIParameterNonInterference:
     def test_hierarchical_with_repetition_bias(self):
         args, _ = self._parse([
             "--goal-directed",
-            "--repetition-bias",
-            "--repetition-penalty", "0.5",
+            "--repetition-penalty",
+            "--repetition-penalty-weight", "0.5",
         ])
         assert args.goal_directed is True
-        assert args.repetition_bias is True
-        assert args.repetition_penalty == 0.5
+        assert args.repetition_penalty is True
+        assert args.repetition_penalty_weight == 0.5
 
     def test_all_features_combined(self):
         """All feature categories can be combined without conflicts."""
@@ -182,7 +182,7 @@ class TestCLIParameterNonInterference:
             "--online-learning",
             "--ml-weight", "0.2",
             # Repetition
-            "--repetition-bias",
+            "--repetition-penalty",
             # Hierarchical
             "--goal-directed",
             "--goal-proximity-weight", "0.4",
@@ -196,7 +196,7 @@ class TestCLIParameterNonInterference:
         assert args.demodulation is True
         assert args.online_learning is True
         assert args.ml_weight == 0.2
-        assert args.repetition_bias is True
+        assert args.repetition_penalty is True
         assert args.goal_directed is True
         assert args.goal_proximity_weight == 0.4
         assert args.embedding_evolution_rate == 0.03

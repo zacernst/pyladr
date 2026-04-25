@@ -1,0 +1,29 @@
+set(auto).
+assign(max_proofs, 6).
+assign(max_weight, 128).
+assign(max_given, 5).
+set(print_given).
+
+formulas(sos).
+-P(x) | -P(i(x,y)) | P(y).
+% P(i(i(x,y),i(i(y,z),i(x,z)))).
+% P(i(i(n(x),x),x)).
+% P(i(x,i(n(x),y))).
+P(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(v),w),y)),i(v,z))))).
+end_of_list.
+
+formulas(goals).
+%P(i(x,i(i(y,i(x,z)),i(i(n(z),i(i(n(v),w),y)),i(v,z))))).
+P(i(x,x)).
+P(i(i(x,i(y,z)),i(y,i(x,z)))).
+P(i(x,i(y,x))).
+P(i(i(x,y),i(i(y,z),i(x,z)))).
+P(i(i(n(x),x),x)).
+P(i(x,i(n(x),y))).
+%% -P(i(a,a)).
+
+%P(i(a,i(i(b,i(a,c)),i(i(n(c),i(i(n(d),e),b)),i(d,c))))).
+% P(i(a,a)).
+%P(i(i(a,i(b,c)),i(b,i(a,c)))).
+%P(i(a,i(b,a))).
+end_of_list.

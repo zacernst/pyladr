@@ -83,24 +83,22 @@ def _hyper_backtrack(
     trail: Trail,
     results: list[Clause],
 ) -> None:
-    """Recursive backtracking search for hyper-resolution satellites.
+    """Iterative backtracking search for hyper-resolution satellites.
+
+    Converts the recursive backtracking into an explicit stack to avoid
+    hitting Python's recursion limit on problems with many negative literals.
 
     At each depth, try to resolve neg_indices[depth] with some positive
-    literal from a satellite. On success, recurse to the next negative
-    literal. When all negative literals are resolved, build the resolvent.
+    literal from a satellite. On success, descend to the next depth.
+    When all negative literals are resolved, build the resolvent.
 
-    Args:
-        nucleus: The nucleus clause.
-        nuc_ctx: Context for nucleus variables.
-        neg_indices: Indices of negative literals in the nucleus.
-        depth: Current depth (which negative literal we're resolving).
-        satellites: Available satellite clauses.
-        sat_bindings: Accumulated (clause, context, lit_idx) for each resolved step.
-        trail: Shared trail for all unifications.
-        results: Accumulator for successful resolvents.
+    Each stack frame is a generator that yields candidates for one depth
+    level. Generators maintain their iteration state across breaks,
+    allowing the search to resume correctly after exploring deeper levels.
     """
-    if depth == len(neg_indices):
-        # All negative literals resolved — build the resolvent
+    total = len(neg_indices)
+
+    if depth >= total:
         resolvent = _build_hyper_resolvent(
             nucleus, nuc_ctx, neg_indices, sat_bindings,
         )
@@ -108,35 +106,57 @@ def _hyper_backtrack(
             results.append(resolvent)
         return
 
-    neg_lit_idx = neg_indices[depth]
-    neg_lit = nucleus.literals[neg_lit_idx]
+    def _candidates(d: int):
+        neg_lit = nucleus.literals[neg_indices[d]]
+        for sat in satellites:
+            for j, sat_lit in enumerate(sat.literals):
+                if sat_lit.sign:
+                    yield neg_lit, sat, j, sat_lit
 
-    for sat in satellites:
-        for j, sat_lit in enumerate(sat.literals):
-            if not sat_lit.sign:
-                continue  # Only resolve with positive literals
+    # Stack of generator iterators, one per depth level.
+    # pending_undo tracks the trail position to restore when backing out
+    # of each pushed level (1:1 with stack entries except the initial).
+    stack = [_candidates(depth)]
+    pending_undo: list[int] = []
 
-            # Try to unify neg_lit.atom with sat_lit.atom
+    while stack:
+        current_it = stack[-1]
+        descended = False
+
+        for neg_lit, sat, j, sat_lit in current_it:
             saved_pos = trail.position
             sat_ctx = Context()
 
             if unify(neg_lit.atom, nuc_ctx, sat_lit.atom, sat_ctx, trail):
-                # Success at this level — recurse
-                sat_bindings.append((sat, sat_ctx, j))
-                _hyper_backtrack(
-                    nucleus=nucleus,
-                    nuc_ctx=nuc_ctx,
-                    neg_indices=neg_indices,
-                    depth=depth + 1,
-                    satellites=satellites,
-                    sat_bindings=sat_bindings,
-                    trail=trail,
-                    results=results,
-                )
-                sat_bindings.pop()
+                current_depth = depth + len(stack)
 
-            # Undo bindings from this attempt
-            trail.undo_to(saved_pos)
+                if current_depth == total:
+                    # All negative literals resolved — build resolvent
+                    sat_bindings.append((sat, sat_ctx, j))
+                    resolvent = _build_hyper_resolvent(
+                        nucleus, nuc_ctx, neg_indices, sat_bindings,
+                    )
+                    if resolvent is not None:
+                        results.append(resolvent)
+                    sat_bindings.pop()
+                    trail.undo_to(saved_pos)
+                    # Continue iterating candidates at this level
+                else:
+                    # Descend to next depth level
+                    sat_bindings.append((sat, sat_ctx, j))
+                    pending_undo.append(saved_pos)
+                    stack.append(_candidates(current_depth))
+                    descended = True
+                    break
+            else:
+                trail.undo_to(saved_pos)
+
+        if not descended:
+            # Current level exhausted — pop and backtrack
+            stack.pop()
+            if pending_undo:
+                trail.undo_to(pending_undo.pop())
+                sat_bindings.pop()
 
 
 def _build_hyper_resolvent(
@@ -289,9 +309,11 @@ def _hyper_backtrack_remaining(
     trail: Trail,
     results: list[Clause],
 ) -> None:
-    """Backtrack over remaining negative literals after fixing one position."""
-    if depth == len(remaining_neg):
-        # Reorder sat_bindings to match neg_indices order
+    """Iterative backtracking over remaining negative literals after fixing one position."""
+    total = len(remaining_neg)
+
+    def _build_ordered_resolvent():
+        """Reorder sat_bindings to match neg_indices order and build resolvent."""
         ordered_bindings: list[tuple[Clause, Context, int]] = []
         remaining_iter = iter(
             b for b in sat_bindings[1:]  # skip the fixed one
@@ -307,36 +329,51 @@ def _hyper_backtrack_remaining(
         )
         if resolvent is not None:
             results.append(resolvent)
+
+    if depth >= total:
+        _build_ordered_resolvent()
         return
 
-    neg_lit_idx = remaining_neg[depth]
-    neg_lit = nucleus.literals[neg_lit_idx]
+    def _candidates(d: int):
+        neg_lit = nucleus.literals[remaining_neg[d]]
+        for sat in satellites:
+            for j, sat_lit in enumerate(sat.literals):
+                if sat_lit.sign:
+                    yield neg_lit, sat, j, sat_lit
 
-    for sat in satellites:
-        for j, sat_lit in enumerate(sat.literals):
-            if not sat_lit.sign:
-                continue
+    stack = [_candidates(depth)]
+    pending_undo: list[int] = []
 
+    while stack:
+        current_it = stack[-1]
+        descended = False
+
+        for neg_lit, sat, j, sat_lit in current_it:
             saved_pos = trail.position
             sat_ctx = Context()
 
             if unify(neg_lit.atom, nuc_ctx, sat_lit.atom, sat_ctx, trail):
-                sat_bindings.append((sat, sat_ctx, j))
-                _hyper_backtrack_remaining(
-                    nucleus=nucleus,
-                    nuc_ctx=nuc_ctx,
-                    neg_indices=neg_indices,
-                    remaining_neg=remaining_neg,
-                    depth=depth + 1,
-                    satellites=satellites,
-                    sat_bindings=sat_bindings,
-                    fixed_pos=fixed_pos,
-                    trail=trail,
-                    results=results,
-                )
-                sat_bindings.pop()
+                current_depth = depth + len(stack)
 
-            trail.undo_to(saved_pos)
+                if current_depth == total:
+                    sat_bindings.append((sat, sat_ctx, j))
+                    _build_ordered_resolvent()
+                    sat_bindings.pop()
+                    trail.undo_to(saved_pos)
+                else:
+                    sat_bindings.append((sat, sat_ctx, j))
+                    pending_undo.append(saved_pos)
+                    stack.append(_candidates(current_depth))
+                    descended = True
+                    break
+            else:
+                trail.undo_to(saved_pos)
+
+        if not descended:
+            stack.pop()
+            if pending_undo:
+                trail.undo_to(pending_undo.pop())
+                sat_bindings.pop()
 
 
 def all_hyper_resolvents(
@@ -370,18 +407,16 @@ def all_hyper_resolvents(
 
     # Case 2: Given clause as satellite
     # Only if the given clause has positive literals (can serve as satellite)
+    # Use hyper_resolve_with_satellite to only generate resolvents where
+    # the given clause participates, avoiding O(S²) full scan + filter.
     if any(lit.sign for lit in given.literals):
         for nuc in usable:
             if nuc is given:
                 continue
             if not any(not lit.sign for lit in nuc.literals):
                 continue  # Nucleus must have negative literals
-            resolvents = hyper_resolve(nuc, usable)
-            # Filter: only keep resolvents that actually used the given clause
-            # as a satellite (not already generated in Case 1 or from other combos)
-            for r in resolvents:
-                if r.justification and given.id in r.justification[0].clause_ids:
-                    results.append(r)
+            resolvents = hyper_resolve_with_satellite(nuc, given, usable)
+            results.extend(resolvents)
 
     return results
 
@@ -468,12 +503,15 @@ def _hyper_backtrack_indexed(
     trail: Trail,
     results: list[Clause],
 ) -> None:
-    """Backtracking search using index to find satellite candidates.
+    """Iterative backtracking search using index to find satellite candidates.
 
-    Like _hyper_backtrack but uses clashable_idx.retrieve_generalizations()
+    Like _hyper_backtrack but uses clashable_idx.retrieve_unifiables()
     to find candidate positive literals, matching C clash_recurse().
+    Uses an explicit stack to avoid recursion limit issues.
     """
-    if depth == len(neg_indices):
+    total = len(neg_indices)
+
+    if depth >= total:
         resolvent = _build_hyper_resolvent(
             nucleus, nuc_ctx, neg_indices, sat_bindings,
         )
@@ -481,44 +519,59 @@ def _hyper_backtrack_indexed(
             results.append(resolvent)
         return
 
-    neg_lit_idx = neg_indices[depth]
-    neg_lit = nucleus.literals[neg_lit_idx]
+    def _candidates(d: int):
+        neg_lit = nucleus.literals[neg_indices[d]]
+        candidates = clashable_idx.retrieve_unifiables(neg_lit.atom)
+        for candidate in candidates:
+            sat_clause, sat_lit = candidate
+            if not sat_lit.sign:
+                continue
+            sat_lit_idx = -1
+            for j, lit in enumerate(sat_clause.literals):
+                if lit is sat_lit:
+                    sat_lit_idx = j
+                    break
+            if sat_lit_idx < 0:
+                continue
+            yield neg_lit, sat_clause, sat_lit_idx, sat_lit
 
-    # Use index to find positive literals that could unify with neg_lit.atom
-    candidates = clashable_idx.retrieve_generalizations(neg_lit.atom)
+    stack = [_candidates(depth)]
+    pending_undo: list[int] = []
 
-    for candidate in candidates:
-        sat_clause, sat_lit = candidate
-        if not sat_lit.sign:
-            continue  # Only resolve with positive literals
+    while stack:
+        current_it = stack[-1]
+        descended = False
 
-        # Find the literal index in the satellite
-        sat_lit_idx = -1
-        for j, lit in enumerate(sat_clause.literals):
-            if lit is sat_lit:
-                sat_lit_idx = j
-                break
-        if sat_lit_idx < 0:
-            continue
+        for neg_lit, sat_clause, sat_lit_idx, sat_lit in current_it:
+            saved_pos = trail.position
+            sat_ctx = Context()
 
-        saved_pos = trail.position
-        sat_ctx = Context()
+            if unify(neg_lit.atom, nuc_ctx, sat_lit.atom, sat_ctx, trail):
+                current_depth = depth + len(stack)
 
-        if unify(neg_lit.atom, nuc_ctx, sat_lit.atom, sat_ctx, trail):
-            sat_bindings.append((sat_clause, sat_ctx, sat_lit_idx))
-            _hyper_backtrack_indexed(
-                nucleus=nucleus,
-                nuc_ctx=nuc_ctx,
-                neg_indices=neg_indices,
-                depth=depth + 1,
-                clashable_idx=clashable_idx,
-                sat_bindings=sat_bindings,
-                trail=trail,
-                results=results,
-            )
-            sat_bindings.pop()
+                if current_depth == total:
+                    sat_bindings.append((sat_clause, sat_ctx, sat_lit_idx))
+                    resolvent = _build_hyper_resolvent(
+                        nucleus, nuc_ctx, neg_indices, sat_bindings,
+                    )
+                    if resolvent is not None:
+                        results.append(resolvent)
+                    sat_bindings.pop()
+                    trail.undo_to(saved_pos)
+                else:
+                    sat_bindings.append((sat_clause, sat_ctx, sat_lit_idx))
+                    pending_undo.append(saved_pos)
+                    stack.append(_candidates(current_depth))
+                    descended = True
+                    break
+            else:
+                trail.undo_to(saved_pos)
 
-        trail.undo_to(saved_pos)
+        if not descended:
+            stack.pop()
+            if pending_undo:
+                trail.undo_to(pending_undo.pop())
+                sat_bindings.pop()
 
 
 def _hyper_satellite_indexed(
@@ -543,7 +596,7 @@ def _hyper_satellite_indexed(
             continue  # Only positive literals can serve as satellite
 
         # Look up negative literals that unify with this positive literal
-        candidates = clashable_idx.retrieve_generalizations(sat_lit.atom)
+        candidates = clashable_idx.retrieve_unifiables(sat_lit.atom)
 
         for candidate in candidates:
             nuc_clause, nuc_lit = candidate
@@ -562,11 +615,9 @@ def _hyper_satellite_indexed(
 
             seen_nuclei.add(nuc_clause.id)
 
-            # Do full hyper-resolution for this nucleus using the index
-            nuc_results: list[Clause] = []
-            _hyper_nucleus_indexed(nuc_clause, clashable_idx, nuc_results)
-
-            # Filter: only keep results that actually used the given clause
-            for r in nuc_results:
-                if r.justification and given.id in r.justification[0].clause_ids:
-                    results.append(r)
+            # Resolve only with given as a required satellite,
+            # avoiding generation of resolvents that don't use given.
+            nuc_results = hyper_resolve_with_satellite(
+                nuc_clause, given, usable,
+            )
+            results.extend(nuc_results)

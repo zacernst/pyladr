@@ -6,9 +6,10 @@ age-based, and ratio-based strategies as in the C Prover9 implementation.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import IntEnum, auto
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from pyladr.core.clause import Clause
 from pyladr.search.priority_sos import PrioritySOS
@@ -21,6 +22,14 @@ class SelectionOrder(IntEnum):
     WEIGHT = 0   # Select lightest clause (C: GS_ORDER_WEIGHT)
     AGE = 1      # Select oldest clause (C: GS_ORDER_AGE)
     RANDOM = 2   # Select random clause (C: GS_ORDER_RANDOM)
+    ENTROPY = 3  # Select highest-entropy clause (structural diversity)
+    UNIFICATION_PENALTY = 4  # Select lowest-penalty clause (most specific preferred)
+    FORTE = 5  # Select by FORTE embedding diversity score
+    PROOF_GUIDED = 6  # Select by proof-guided exploitation/exploration blend
+    TREE2VEC = 7  # Select by Tree2Vec structural embedding diversity
+    TREE2VEC_MAXIMIN = 8  # Select by Tree2Vec maximin: highest floor similarity across all goals
+    RNN2VEC = 9  # Select by RNN2Vec structural embedding diversity
+    RNN2VEC_RANDOM_GOAL = 10  # Select SOS clause nearest to a randomly-chosen unproven goal
 
 
 @dataclass(slots=True)
@@ -61,10 +70,14 @@ class GivenSelection:
 
     def __post_init__(self) -> None:
         if not self.rules:
-            # Default: Prover9 default is ratio=5:1 (weight:age)
+            # Default: Match C Prover9 ratio=5 behavior.
+            # C Prover9 uses age_factor=5 meaning: select by age first,
+            # then by weight (age_factor - 1) = 4 times, total cycle of 5.
+            # Output pattern: (A), (T), (T), (T), (T), (A), ...
+            # where T = Theme (weight-based selection).
             self.rules = [
-                SelectionRule("W", SelectionOrder.WEIGHT, part=5),
                 SelectionRule("A", SelectionOrder.AGE, part=1),
+                SelectionRule("W", SelectionOrder.WEIGHT, part=4),
             ]
         self._cycle_size = sum(r.part for r in self.rules)
         self._count = 0
@@ -144,6 +157,27 @@ class GivenSelection:
             return sos.pop_first()
         if order == SelectionOrder.WEIGHT:
             return sos.pop_lightest()
+        if order == SelectionOrder.ENTROPY:
+            return sos.pop_highest_entropy()
+        if order == SelectionOrder.UNIFICATION_PENALTY:
+            return sos.pop_lowest_penalty()
+        if order == SelectionOrder.FORTE:
+            return sos.pop_best_forte()
+        if order == SelectionOrder.PROOF_GUIDED:
+            return sos.pop_best_proof_guided()
+        if order in (SelectionOrder.TREE2VEC, SelectionOrder.TREE2VEC_MAXIMIN):
+            # Both T2V variants reuse the FORTE diversity heap for fallback.
+            # The actual per-clause scoring is handled upstream in
+            # GivenClauseSearch._make_inferences() before select_given() is
+            # called, so this path is only reached when that scoring returns
+            # None (no embeddings available yet).
+            result = sos.pop_best_forte()
+            return result if result is not None else sos.pop_first()
+        if order in (SelectionOrder.RNN2VEC, SelectionOrder.RNN2VEC_RANDOM_GOAL):
+            # Both RNN2Vec selection modes are handled upstream by GivenClauseSearch.
+            # This fallback is reached when no embeddings are available yet.
+            result = sos.pop_best_forte()
+            return result if result is not None else sos.pop_first()
         # RANDOM: fall back to age
         return sos.pop_first()
 
@@ -171,8 +205,154 @@ class GivenSelection:
                     best = c
             return best
 
+        if order == SelectionOrder.ENTROPY:
+            # Highest entropy clause (most structurally diverse)
+            best_c: Clause | None = None
+            best_entropy = -1.0
+            for c in sos:
+                e = _clause_entropy(c)
+                if e > best_entropy or (e == best_entropy and (best_c is None or c.id < best_c.id)):
+                    best_entropy = e
+                    best_c = c
+            return best_c
+
+        if order == SelectionOrder.UNIFICATION_PENALTY:
+            # Lowest penalty clause (most specific preferred)
+            best_p: Clause | None = None
+            best_penalty = float("inf")
+            for c in sos:
+                p = _clause_generality_penalty(c)
+                if p < best_penalty or (p == best_penalty and (best_p is None or c.id < best_p.id)):
+                    best_penalty = p
+                    best_p = c
+            return best_p
+
+        if PrioritySOS.supports_order(order):
+            # ML-based orders require heap-backed extraction that only
+            # PrioritySOS provides.  This code path should never be
+            # reached in practice because these orders are only added
+            # when the corresponding flags force priority_sos=True.
+            raise ValueError(
+                f"SelectionOrder.{order.name} requires PrioritySOS. "
+                f"Enable priority_sos or remove the {order.name.lower()} "
+                f"selection rule."
+            )
+
         # RANDOM: not implemented yet, fall back to age
         return sos.first
+
+
+class NodeCounts(NamedTuple):
+    """Counts of each node type in a clause tree."""
+
+    clause: int = 0
+    literal: int = 0
+    predicate: int = 0
+    function: int = 0
+    variable: int = 0
+    constant: int = 0
+
+
+def _clause_entropy(clause: Clause) -> float:
+    """Calculate Shannon entropy of a clause's node-type distribution.
+
+    Classifies each node in the clause tree into one of 6 types:
+    clause, literal, predicate, function, variable, constant.
+    Returns H = -sum(p * log2(p)) over the type distribution.
+
+    Performance: O(n) where n = total term nodes. Uses a flat array
+    for counts to minimize overhead (no dict allocation per call).
+    """
+    # Mutable list for accumulation: [clause, literal, predicate, function, variable, constant]
+    counts = [1, len(clause.literals), 0, 0, 0, 0]
+
+    for lit in clause.literals:
+        _count_nodes_flat(lit.atom, counts, True)
+
+    total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4] + counts[5]
+    if total <= 1:
+        return 0.0
+
+    entropy = 0.0
+    for c in counts:
+        if c > 0:
+            p = c / total
+            entropy -= p * math.log2(p)
+    return entropy
+
+
+def _count_nodes_flat(term, counts: list, is_predicate: bool) -> None:
+    """Count term nodes into flat array.
+
+    Indices: 0=clause, 1=literal, 2=predicate, 3=function, 4=variable, 5=constant.
+    """
+    if term.is_variable:
+        counts[4] += 1
+    elif term.is_constant:
+        counts[5] += 1
+    else:
+        if is_predicate:
+            counts[2] += 1
+        else:
+            counts[3] += 1
+        for arg in term.args:
+            _count_nodes_flat(arg, counts, False)
+
+
+def _clause_generality_penalty(clause: Clause) -> float:
+    """Calculate generality penalty for a clause.
+
+    Penalizes overly general clauses that unify with too many others.
+    Uses variable ratio (distinct_vars / total_nodes) as the base metric,
+    with heavy penalties for single-literal all-variable patterns like P(x,y,z).
+
+    Returns a penalty score >= 0.0. Lower = more specific (preferred).
+
+    Performance: O(n) where n = total term nodes. Uses a flat set for
+    distinct variable tracking and integer counter for total nodes.
+    """
+    num_literals = len(clause.literals)
+    if num_literals == 0:
+        return 0.0
+
+    # Count total nodes and collect distinct variables in one pass
+    total_nodes = 1 + num_literals  # clause node + literal nodes
+    distinct_vars: set[int] = set()
+    total_vars = 0
+
+    for lit in clause.literals:
+        _collect_var_stats(lit.atom, distinct_vars)
+        total_nodes += lit.atom.symbol_count
+
+    total_vars = len(distinct_vars)
+
+    if total_nodes == 0:
+        return 0.0
+
+    # Base penalty: variable ratio
+    var_ratio = total_vars / total_nodes
+
+    # Heavy penalty for single-literal all-variable clauses: P(x, y, z)
+    # These unify with everything and cause unification explosion
+    if num_literals == 1:
+        atom = clause.literals[0].atom
+        if atom.arity > 0 and all(a.is_variable for a in atom.args):
+            # All args are variables: maximum generality
+            return 10.0 + var_ratio
+
+    # Graduated penalty based on variable ratio
+    # var_ratio near 1.0 = very general (many variables, few constants)
+    # var_ratio near 0.0 = very specific (ground or mostly constants)
+    return var_ratio
+
+
+def _collect_var_stats(term, distinct_vars: set[int]) -> None:
+    """Collect distinct variable numbers from a term tree. O(n)."""
+    if term.is_variable:
+        distinct_vars.add(term.varnum)
+    else:
+        for arg in term.args:
+            _collect_var_stats(arg, distinct_vars)
 
 
 def _weight_compare(a: Clause, b: Clause) -> int:

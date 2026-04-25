@@ -1,0 +1,14 @@
+set(auto).
+assign(max_proofs, 2).
+assign(max_weight, 50).
+assign(max_given, 20).
+set(print_given).
+
+formulas(sos).
+-P(x) | -P(i(x,y)) | P(y).
+P(i(a,i(b,a))).
+end_of_list.
+
+formulas(goals).
+P(i(a,a)).
+end_of_list.
