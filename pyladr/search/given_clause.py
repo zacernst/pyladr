@@ -109,6 +109,8 @@ from pyladr.search.options import SearchOptions  # noqa: E402
 from pyladr.search.t2v_helpers import (  # noqa: E402
     _get_antecedent_term,
     _t2v_cosine,
+    compute_t2v_cumulative_histogram,
+    compute_t2v_histogram,
     format_t2v_histogram,
 )
 
@@ -2773,105 +2775,12 @@ class GivenClauseSearch:
     # ── Result construction ─────────────────────────────────────────────
 
     def _compute_t2v_histogram(self, proof: object) -> dict | None:
-        """Compute conditional probability histogram: P(range|proof) vs P(range|non-proof).
-
-        Splits all given clause goal-distances into proof vs non-proof populations,
-        buckets both, and normalizes to probabilities.
-        """
-        if not self._t2v_all_given_distances:
-            return None
-
-        proof_ids = {c.id for c in proof.clauses}
-        proof_scores: list[float] = []
-        nonproof_scores: list[float] = []
-        all_scores: list[float] = []
-
-        for cid, score in self._t2v_all_given_distances.items():
-            all_scores.append(score)
-            if cid in proof_ids:
-                proof_scores.append(score)
-            else:
-                nonproof_scores.append(score)
-
-        if not all_scores:
-            return None
-
-        lo = min(all_scores)
-        hi = max(all_scores)
-        if hi == lo:
-            lo = max(0.0, lo - 0.05)
-            hi = min(1.0, hi + 0.05)
-        bucket_width = (hi - lo) / 5
-
-        def _bucket_and_normalize(scores: list[float]) -> list[float]:
-            counts = [0, 0, 0, 0, 0]
-            for s in scores:
-                counts[min(4, int((s - lo) / bucket_width))] += 1
-            n = len(scores)
-            return [c / n if n > 0 else 0.0 for c in counts]
-
-        return {
-            "proof_probs": _bucket_and_normalize(proof_scores),
-            "nonproof_probs": _bucket_and_normalize(nonproof_scores),
-            "proof_n": len(proof_scores),
-            "nonproof_n": len(nonproof_scores),
-            "lo": lo,
-            "hi": hi,
-            "bucket_width": bucket_width,
-        }
+        """Compute conditional probability histogram: P(range|proof) vs P(range|non-proof)."""
+        return compute_t2v_histogram(self._t2v_all_given_distances, proof)
 
     def _compute_t2v_cumulative_histogram(self) -> dict | None:
-        """Compute cumulative goal-distance histogram across all proofs found so far.
-
-        Same logic as ``_compute_t2v_histogram`` but unions clause IDs from
-        every proof in ``self._proofs``.
-        """
-        if not self._t2v_all_given_distances or not self._proofs:
-            return None
-
-        proof_ids: set[int] = set()
-        for p in self._proofs:
-            for c in p.clauses:
-                proof_ids.add(c.id)
-
-        proof_scores: list[float] = []
-        nonproof_scores: list[float] = []
-        all_scores: list[float] = []
-
-        for cid, score in self._t2v_all_given_distances.items():
-            all_scores.append(score)
-            if cid in proof_ids:
-                proof_scores.append(score)
-            else:
-                nonproof_scores.append(score)
-
-        if not all_scores:
-            return None
-
-        lo = min(all_scores)
-        hi = max(all_scores)
-        if hi == lo:
-            lo = max(0.0, lo - 0.05)
-            hi = min(1.0, hi + 0.05)
-        bucket_width = (hi - lo) / 5
-
-        def _bucket_and_normalize(scores: list[float]) -> list[float]:
-            counts = [0, 0, 0, 0, 0]
-            for s in scores:
-                counts[min(4, int((s - lo) / bucket_width))] += 1
-            n = len(scores)
-            return [c / n if n > 0 else 0.0 for c in counts]
-
-        return {
-            "proof_probs": _bucket_and_normalize(proof_scores),
-            "nonproof_probs": _bucket_and_normalize(nonproof_scores),
-            "proof_n": len(proof_scores),
-            "nonproof_n": len(nonproof_scores),
-            "n_proofs": len(self._proofs),
-            "lo": lo,
-            "hi": hi,
-            "bucket_width": bucket_width,
-        }
+        """Compute cumulative goal-distance histogram across all proofs."""
+        return compute_t2v_cumulative_histogram(self._t2v_all_given_distances, self._proofs)
 
     def _make_result(self, exit_code: ExitCode) -> SearchResult:
         """Construct search result. Matches C collect_prover_results()."""
