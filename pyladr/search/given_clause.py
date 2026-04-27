@@ -17,9 +17,7 @@ The algorithm integrates:
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
-from enum import IntEnum, auto
 from itertools import chain
 from typing import Callable
 
@@ -85,6 +83,10 @@ from pyladr.search.selection import (
     _clause_generality_penalty,
     default_clause_weight,
 )
+from pyladr.search.clause_formatting import (
+    calculate_structural_entropy,
+    format_clause_std,
+)
 from pyladr.search.state import ClauseList, SearchState
 from pyladr.search.statistics import SearchStatistics
 
@@ -95,56 +97,13 @@ logger = logging.getLogger(__name__)
 from pyladr.search.unit_conflict import UnitConflictIndex  # noqa: E402
 
 
-# ── Exit codes matching C search.h ──────────────────────────────────────────
-
-
-class ExitCode(IntEnum):
-    """Search termination codes matching C exit codes."""
-
-    MAX_PROOFS_EXIT = 1
-    SOS_EMPTY_EXIT = 2
-    MAX_GIVEN_EXIT = 3
-    MAX_KEPT_EXIT = 4
-    MAX_SECONDS_EXIT = 5
-    MAX_GENERATED_EXIT = 6
-    FATAL_EXIT = 7
-
+# ── Result types (canonical definition in pyladr.search.result_types) ───────
+# Re-exported here for backward compatibility with existing import paths.
+from pyladr.search.result_types import ExitCode, Proof, SearchResult  # noqa: E402
 
 # ── Search options (canonical definition in pyladr.search.options) ──────────
 # Re-exported here for backward compatibility with existing import paths.
 from pyladr.search.options import SearchOptions  # noqa: E402
-
-
-# ── Proof result ────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class Proof:
-    """A proof found during search.
-
-    Contains the empty clause and a trace of clauses used.
-    """
-
-    empty_clause: Clause
-    clauses: tuple[Clause, ...]
-
-    def __repr__(self) -> str:
-        return (
-            f"Proof(empty_clause=id:{self.empty_clause.id}, "
-            f"length={len(self.clauses)})"
-        )
-
-
-# ── Search result ───────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class SearchResult:
-    """Result of a search invocation."""
-
-    exit_code: ExitCode
-    proofs: tuple[Proof, ...]
-    stats: SearchStatistics
 
 
 # ── T2V goal-distance histogram formatting ──────────────────────────────────
@@ -2826,24 +2785,7 @@ class GivenClauseSearch:
 
     def _format_clause_std(self, clause: Clause) -> str:
         """Format clause matching C CL_FORM_STD (ID, literals, justification)."""
-        st = self._symbol_table
-        parts: list[str] = []
-        if clause.id > 0:
-            parts.append(f"{clause.id} ")
-        if clause.is_empty:
-            parts.append("$F")
-        else:
-            lit_strs = []
-            for lit in clause.literals:
-                atom_str = lit.atom.to_str(st)
-                lit_strs.append(atom_str if lit.sign else f"-{atom_str}")
-            parts.append(" | ".join(lit_strs))
-        if clause.justification:
-            just = clause.justification[0]
-            parts.append(f".  [{just.just_type.name.lower()}].")
-        else:
-            parts.append(".")
-        return "".join(parts)
+        return format_clause_std(self._symbol_table, clause)
 
     def _format_selection_extras(self, clause: Clause) -> str:
         """Format conditional selection metric extras for display."""
@@ -2883,61 +2825,8 @@ class GivenClauseSearch:
         return "".join(parts)
 
     def _calculate_structural_entropy(self, clause: Clause) -> float:
-        """Calculate Shannon entropy of clause interpreted as tree structure.
-
-        Node types: Clause, Literal, Predicate, Function, Variable, Constant
-        Formula: H = -∑ p(v) log₂ p(v) where p(v) is probability of node type v
-        """
-        node_counts = {
-            'clause': 0,
-            'literal': 0,
-            'predicate': 0,
-            'function': 0,
-            'variable': 0,
-            'constant': 0
-        }
-
-        # Count clause node
-        node_counts['clause'] = 1
-
-        # Count literals
-        node_counts['literal'] = len(clause.literals)
-
-        # Count predicate, function, variable, constant nodes in all terms
-        for literal in clause.literals:
-            self._count_term_nodes(literal.atom, node_counts, is_predicate=True)
-
-        # Calculate entropy
-        total_nodes = sum(node_counts.values())
-        if total_nodes <= 1:
-            return 0.0
-
-        entropy = 0.0
-        for count in node_counts.values():
-            if count > 0:
-                p = count / total_nodes
-                entropy -= p * math.log2(p)
-
-        return entropy
-
-    def _count_term_nodes(self, term, node_counts: dict, is_predicate: bool = False) -> None:
-        """Recursively count nodes in a term tree."""
-        from pyladr.core.term import Term
-
-        if term.is_variable:
-            node_counts['variable'] += 1
-        elif term.is_constant:
-            node_counts['constant'] += 1
-        else:
-            # Complex term - distinguish between predicate and function
-            if is_predicate:
-                node_counts['predicate'] += 1
-            else:
-                node_counts['function'] += 1
-
-            # Recursively count argument nodes
-            for arg in term.args:
-                self._count_term_nodes(arg, node_counts, is_predicate=False)
+        """Calculate Shannon entropy of clause interpreted as tree structure."""
+        return calculate_structural_entropy(clause)
 
     # ── Result construction ─────────────────────────────────────────────
 
