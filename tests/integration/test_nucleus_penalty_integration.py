@@ -662,6 +662,7 @@ class TestCProver9Compatibility:
 class TestPerformanceIntegration:
     """Test performance characteristics of the penalty system."""
 
+    @pytest.mark.slow
     def test_search_time_overhead_when_enabled(self) -> None:
         """Penalty computation adds <5% overhead to search time.
 
