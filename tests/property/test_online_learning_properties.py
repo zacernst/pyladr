@@ -266,7 +266,7 @@ class TestOutcomeClassification:
     @settings(max_examples=20, deadline=5000)
     def test_outcome_is_productive_or_unproductive(self, otype):
         """Every outcome type is classified as either productive or unproductive."""
-        productive = otype in (OutcomeType.KEPT, OutcomeType.PROOF)
+        productive = otype in (OutcomeType.KEPT, OutcomeType.PROOF, OutcomeType.SUBSUMER)
         unproductive = otype in (OutcomeType.SUBSUMED, OutcomeType.TAUTOLOGY, OutcomeType.WEIGHT_LIMIT)
         # Exactly one must be true
         assert productive != unproductive

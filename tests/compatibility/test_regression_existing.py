@@ -26,14 +26,15 @@ class TestTermRegression:
     def test_rigid_term_creation(self):
         from pyladr.core.term import get_rigid_term
         t = get_rigid_term(1, 0)
-        assert t.private_symbol == 1
+        # Rigid terms store negative symbol number (C-compatible encoding)
+        assert t.private_symbol == -1
 
     def test_complex_term_structure(self):
         from pyladr.core.term import get_rigid_term, get_variable_term
         a = get_rigid_term(1, 0)
         x = get_variable_term(0)
         f_ax = get_rigid_term(2, 2, (a, x))
-        assert f_ax.private_symbol == 2
+        assert f_ax.private_symbol == -2
         assert len(f_ax.args) == 2
 
     def test_term_immutability(self):
@@ -66,10 +67,10 @@ class TestClauseRegression:
     def test_justification_types(self):
         from pyladr.core.clause import JustType
         # Verify all C-matching justification types exist
-        assert JustType.INPUT_JUST is not None
-        assert JustType.BINARY_RES_JUST is not None
-        assert JustType.PARA_JUST is not None
-        assert JustType.DEMOD_JUST is not None
+        assert JustType.INPUT is not None
+        assert JustType.BINARY_RES is not None
+        assert JustType.PARA is not None
+        assert JustType.DEMOD is not None
 
 
 class TestSubstitutionRegression:
@@ -100,7 +101,7 @@ class TestSubstitutionRegression:
         x = get_variable_term(0)
         a = get_rigid_term(1, 0)
         c1, c2, tr = Context(), Context(), Trail()
-        mark = tr.mark()
+        mark = tr.position
         unify(x, c1, a, c2, tr)
         tr.undo_to(mark)
 
@@ -123,9 +124,9 @@ class TestParsingRegression:
 
         st = SymbolTable()
         parser = LADRParser(st)
-        c = parser.parse_clause("P(a) | -Q(b)")
-        assert c is not None
-        assert len(c.literals) == 2
+        parsed = parser.parse_input("formulas(sos).\nP(a) | -Q(b).\nend_of_list.\n")
+        assert len(parsed.sos) == 1
+        assert len(parsed.sos[0].literals) == 2
 
     def test_parse_input_block(self):
         from pyladr.parsing.ladr_parser import LADRParser
@@ -133,7 +134,7 @@ class TestParsingRegression:
 
         st = SymbolTable()
         parser = LADRParser(st)
-        usable, sos, goals = parser.parse_input("""\
+        parsed = parser.parse_input("""\
 formulas(sos).
   P(a).
   -P(x) | Q(x).
@@ -143,8 +144,8 @@ formulas(goals).
   Q(a).
 end_of_list.
 """)
-        assert len(sos) >= 2
-        assert len(goals) >= 1
+        assert len(parsed.sos) >= 2
+        assert len(parsed.goals) >= 1
 
 
 # ── Inference Rule Regression ──────────────────────────────────────────────
@@ -165,10 +166,9 @@ class TestResolutionRegression:
         c1 = Clause(literals=(Literal(sign=True, atom=get_rigid_term(P_sn, 1, (a,))),))
         c2 = Clause(literals=(Literal(sign=False, atom=get_rigid_term(P_sn, 1, (x,))),))
 
-        resolvents = list(binary_resolve(c1, c2))
-        assert len(resolvents) >= 1
-        # Should produce the empty clause
-        assert any(len(r.literals) == 0 for r in resolvents)
+        resolvent = binary_resolve(c1, 0, c2, 0)
+        assert resolvent is not None
+        assert len(resolvent.literals) == 0  # empty clause
 
     def test_tautology_detection(self):
         from pyladr.core.clause import Clause, Literal
@@ -243,7 +243,7 @@ class TestParamodulationRegression:
             literals=(Literal(sign=True, atom=get_rigid_term(p_sn, 1, (a,))),)
         )
 
-        results = list(para_from_into(eq_clause, target, eq_sn))
+        results = para_from_into(eq_clause, target, check_top=True, symbol_table=st)
         assert len(results) >= 1
 
 
@@ -377,7 +377,7 @@ class TestIndexingRegression:
         f_x = get_rigid_term(2, 1, (x,))
 
         tree.insert(f_a, "clause_1")
-        results = list(tree.retrieve_generalization(f_a))
+        results = list(tree.retrieve_generalizations(f_a))
         assert "clause_1" in results
 
     def test_feature_index_basic(self):
@@ -389,7 +389,7 @@ class TestIndexingRegression:
         atom = get_rigid_term(1, 1, (get_rigid_term(2, 0),))
         c = Clause(literals=(Literal(sign=True, atom=atom),), id=1)
         idx.insert(c)
-        candidates = list(idx.candidates_for_subsumption(c))
+        candidates = list(idx.forward_candidates(c))
         assert len(candidates) >= 0  # Just verify it doesn't crash
 
 
@@ -401,20 +401,26 @@ class TestOrderingRegression:
 
     def test_lrpo_ordering(self):
         from pyladr.core.term import get_rigid_term
-        from pyladr.ordering.lrpo import lrpo_compare
-        from pyladr.ordering.base import Ordertype
+        from pyladr.core.symbol import SymbolTable
+        from pyladr.ordering.lrpo import lrpo
 
-        a = get_rigid_term(1, 0)
-        f_a = get_rigid_term(2, 1, (a,))
-        result = lrpo_compare(f_a, a, {})
-        assert result == Ordertype.GREATER
+        st = SymbolTable()
+        sn_a = st.str_to_sn("a", 0)
+        sn_f = st.str_to_sn("f", 1)
+        a = get_rigid_term(sn_a, 0)
+        f_a = get_rigid_term(sn_f, 1, (a,))
+        # lrpo returns True if first term is greater
+        assert lrpo(f_a, a, lex_order_vars=False, st=st) is True
 
     def test_kbo_ordering(self):
         from pyladr.core.term import get_rigid_term
-        from pyladr.ordering.kbo import kbo_compare
-        from pyladr.ordering.base import Ordertype
+        from pyladr.core.symbol import SymbolTable
+        from pyladr.ordering.kbo import kbo
 
-        a = get_rigid_term(1, 0)
-        f_a = get_rigid_term(2, 1, (a,))
-        result = kbo_compare(f_a, a, {}, {})
-        assert result == Ordertype.GREATER
+        st = SymbolTable()
+        sn_a = st.str_to_sn("a", 0)
+        sn_f = st.str_to_sn("f", 1)
+        a = get_rigid_term(sn_a, 0)
+        f_a = get_rigid_term(sn_f, 1, (a,))
+        # kbo returns True if first term is greater
+        assert kbo(f_a, a, lex_order_vars=False, st=st) is True

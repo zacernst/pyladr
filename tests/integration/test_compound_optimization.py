@@ -199,7 +199,8 @@ class TestPrioritySOS_SearchEngine:
     def test_sos_type_default(self):
         opts = SearchOptions()
         search = GivenClauseSearch(options=opts)
-        assert not isinstance(search._state.sos, PrioritySOS)
+        # PrioritySOS is now the default SOS type
+        assert isinstance(search._state.sos, PrioritySOS)
 
     def test_clause_append_and_remove(self):
         """Clauses can be added and removed from PrioritySOS during search."""
@@ -374,5 +375,5 @@ class TestConfigurationCompatibility:
     def test_defaults_unchanged(self):
         """Default options don't enable any optimizations."""
         opts = SearchOptions()
-        assert opts.priority_sos is False
+        assert opts.priority_sos is True
         assert opts.lazy_demod is False

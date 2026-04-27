@@ -96,6 +96,47 @@ class TestTokenizer:
         assert tokens[0].type == TokenType.STRING
         assert tokens[0].value == '"hello world"'
 
+    # ── Apostrophe / prime edge cases ──────────────────────────────────────
+
+    def test_double_prime(self):
+        """x'' → [x, ', '] — each prime is a solo token, never aggregated."""
+        tokens = tokenize("x''")
+        assert len(tokens) == 3
+        assert tokens[0].value == "x"
+        assert tokens[1].value == "'"
+        assert tokens[2].value == "'"
+
+    def test_triple_prime(self):
+        """x''' → [x, ', ', '] — three separate prime tokens."""
+        tokens = tokenize("x'''")
+        assert len(tokens) == 4
+        assert [t.value for t in tokens] == ["x", "'", "'", "'"]
+
+    def test_prime_does_not_aggregate_with_equals(self):
+        """x'=y → [x, ', =, y] — prime must NOT merge with following '='."""
+        tokens = tokenize("x'=y")
+        assert len(tokens) == 4
+        assert [t.value for t in tokens] == ["x", "'", "=", "y"]
+
+    def test_prime_does_not_aggregate_with_special_sequence(self):
+        """x'!=y → [x, ', !=, y] — prime stays solo, != aggregates normally."""
+        tokens = tokenize("x'!=y")
+        assert len(tokens) == 4
+        assert [t.value for t in tokens] == ["x", "'", "!=", "y"]
+
+    def test_prime_after_close_paren(self):
+        """(x)' → [(, x, ), '] — prime after grouping expression."""
+        tokens = tokenize("(x)'")
+        assert len(tokens) == 4
+        assert tokens[3].value == "'"
+        assert tokens[3].type == TokenType.SPECIAL
+
+    def test_prime_between_specials(self):
+        """='*' → [=, ', *, '] — primes stay solo between other specials."""
+        tokens = tokenize("='*'")
+        assert len(tokens) == 4
+        assert [t.value for t in tokens] == ["=", "'", "*", "'"]
+
 
 class TestStripComments:
     def test_no_comments(self):
@@ -113,6 +154,26 @@ class TestStripComments:
     def test_multiple_comments(self):
         result = strip_comments("a % c1\nb % c2\nc")
         assert result == "a \nb \nc"
+
+    def test_empty_input(self):
+        assert strip_comments("") == ""
+
+    def test_comment_at_end_no_newline(self):
+        """Comment at end of input with no trailing newline."""
+        assert strip_comments("a * b % trailing") == "a * b "
+
+    def test_adjacent_percent_in_quote(self):
+        """Multiple % inside a quoted string are preserved."""
+        assert strip_comments('"%%stuff%%"') == '"%%stuff%%"'
+
+    def test_quote_after_comment_start(self):
+        """Quote char after % is part of the comment, not a string opener."""
+        result = strip_comments('a % "not a string\nb')
+        assert result == "a \nb"
+
+    def test_whitespace_only_lines_with_comments(self):
+        result = strip_comments("  % comment\n  % another\n  x.")
+        assert result.strip() == "x."
 
 
 # ── Term parsing tests ──────────────────────────────────────────────────────
@@ -249,6 +310,17 @@ class TestTermParsing:
         # lhs of * should be '(x)
         inv = lhs.arg(0)
         assert table.sn_to_str(inv.symnum) == "'"
+
+    def test_double_prime_parsing(self):
+        """\"x''\" parses as '('(x)) — nested postfix application."""
+        table = SymbolTable()
+        t = parse_term("x''.", table)
+        assert t.is_complex
+        assert table.sn_to_str(t.symnum) == "'"
+        inner = t.arg(0)
+        assert inner.is_complex
+        assert table.sn_to_str(inner.symnum) == "'"
+        assert inner.arg(0).is_variable
 
     def test_complex_group_axiom(self):
         """'(x * y) * z = x * (y * z)' — associativity axiom."""
@@ -449,7 +521,7 @@ class TestCrossValidation:
             pytest.skip("simple_group.in not found")
         text = input_file.read_text()
         result = parse_input(text)
-        assert len(result.sos) == 4
+        assert len(result.sos) == 6  # 6 axioms in simple_group.in
         assert len(result.goals) == 1
 
     def test_parse_identity_only(self, test_inputs_dir):
@@ -467,7 +539,7 @@ class TestCrossValidation:
             pytest.skip("lattice_absorption.in not found")
         text = input_file.read_text()
         result = parse_input(text)
-        assert len(result.sos) == 6
+        assert len(result.sos) == 2  # 2 absorption laws in lattice_absorption.in
         assert len(result.goals) == 1
 
 

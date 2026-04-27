@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Python 3.14 free-threaded clone of Prover9/LADR automated theorem proving system"
 readme = "README.md"
 license = "GPL-2.0-only"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 authors = [{ name = "Prover9 Python Team" }]
 keywords = [
   "theorem-proving",
@@ -22,10 +22,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 
-dependencies = [
-    "jupyter>=1.1.1",
-    "pydantic>=2.11",
-]
+dependencies = []
 
 [project.optional-dependencies]
 ml = ["torch>=2.11", "torch-geometric>=2.7"]
@@ -76,8 +73,6 @@ dev = [
   "ruff>=0.11",
   "pre-commit>=4.2",
   "pybind11>=2.12",
-  "scikit-learn>=1.8.0",
-  "matplotlib>=3.10.8",
 ]
 
 [build-system]
@@ -125,16 +120,10 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
-plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
-
-[tool.pydantic-mypy]
-init_forbid_extra = true
-init_typed = true
-warn_required_dynamic_aliases = true
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

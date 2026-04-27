@@ -214,11 +214,14 @@ class TestParallelWithAdvancedFeatures:
         x, y = _v(0), _v(1)
         a, b = _t(st, "a"), _t(st, "b")
 
-        clauses = [
-            _cl(_pos(_t(st, "P", x, y)), _pos(_t(st, "Q", x))),
-            _cl(_neg(_t(st, "P", a, b))),
-            _cl(_neg(_t(st, "Q", a))),
-        ]
+        def make_clauses():
+            # Clause objects must NOT be reused across search runs — IDs are
+            # mutated during search, causing ID conflicts if reused.
+            return [
+                _cl(_pos(_t(st, "P", x, y)), _pos(_t(st, "Q", x))),
+                _cl(_neg(_t(st, "P", a, b))),
+                _cl(_neg(_t(st, "Q", a))),
+            ]
 
         for parallel in [None, ParallelSearchConfig(enabled=False),
                          ParallelSearchConfig(enabled=True, min_usable_for_parallel=1)]:
@@ -229,7 +232,7 @@ class TestParallelWithAdvancedFeatures:
                 parallel=parallel,
             )
             search = GivenClauseSearch(options=opts, symbol_table=st)
-            result = search.run(sos=list(clauses))
+            result = search.run(sos=make_clauses())
             assert result.exit_code == ExitCode.MAX_PROOFS_EXIT, (
                 f"Failed with parallel={parallel}"
             )

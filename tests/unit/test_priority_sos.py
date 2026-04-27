@@ -170,6 +170,34 @@ class TestPrioritySOS:
         assert sos.peek_lightest() is c2
         assert sos.length == 2  # Not removed
 
+    def test_same_weight_no_crash(self):
+        """Clauses with identical weight must not crash heapq comparison."""
+        sos = PrioritySOS("sos")
+        c1 = _make_clause(1, 5.0)
+        c2 = _make_clause(2, 5.0)
+        c3 = _make_clause(3, 5.0)
+        sos.append(c1)
+        sos.append(c2)
+        sos.append(c3)
+        # All three should be extractable without TypeError
+        results = []
+        while not sos.is_empty:
+            results.append(sos.pop_lightest())
+        assert len(results) == 3
+        # Lower id wins tie-break
+        assert results[0].id == 1
+        assert results[1].id == 2
+        assert results[2].id == 3
+
+    def test_clause_lt_ordering(self):
+        """Clause.__lt__ orders by weight first, then id."""
+        c1 = _make_clause(1, 3.0)
+        c2 = _make_clause(2, 5.0)
+        c3 = _make_clause(3, 3.0)
+        assert c1 < c2      # lower weight wins
+        assert c1 < c3      # same weight, lower id wins
+        assert not c2 < c1  # higher weight loses
+
 
 class TestPrioritySOS_vs_ClauseList:
     """Verify PrioritySOS produces identical weight-ordered extraction as ClauseList."""

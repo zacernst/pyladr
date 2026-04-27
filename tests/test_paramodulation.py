@@ -33,6 +33,7 @@ from pyladr.inference.paramodulation import (
     para_from_right,
     paramodulate,
     pos_eq,
+    reset_orientation_state,
 )
 
 
@@ -629,3 +630,64 @@ class TestPositionVectors:
             # from_pos should be (1, 1) - literal 1, left side
             assert just.para.from_pos[0] == 1  # first literal
             assert just.para.from_pos[1] == 1  # left side (arg 0 → C 1-indexed)
+
+
+# ── Orientation state reset regression ───────────────────────────────────────
+
+
+class TestOrientationStateReset:
+    """Regression tests for orientation state leaking across searches.
+
+    The _oriented_eqs and _renamable_flips sets are module-level and were
+    historically never cleared between GivenClauseSearch.run() calls.
+    reset_orientation_state() was added to fix this.
+    """
+
+    def test_reset_clears_oriented_eqs(self, st: SymbolTable):
+        """reset_orientation_state clears _oriented_eqs."""
+        a = _make_term(st, "a")
+        b = _make_term(st, "b")
+        atom = _eq_atom(st, a, b)
+        mark_oriented_eq(atom)
+        assert is_oriented_eq(atom)
+        reset_orientation_state()
+        assert not is_oriented_eq(atom)
+        assert len(_oriented_eqs) == 0
+        assert len(_renamable_flips) == 0
+
+    def test_reset_clears_renamable_flips(self, st: SymbolTable):
+        """reset_orientation_state clears _renamable_flips."""
+        a = _make_term(st, "a")
+        b = _make_term(st, "b")
+        atom = _eq_atom(st, a, b)
+        mark_renamable_flip(atom)
+        assert is_renamable_flip(atom)
+        reset_orientation_state()
+        assert not is_renamable_flip(atom)
+
+    def test_stale_orientation_does_not_persist_across_searches(self, st: SymbolTable):
+        """Marking an atom oriented then resetting does not affect subsequent searches.
+
+        This is the core regression: previously reset was never called, so
+        marks accumulated indefinitely and could affect unrelated problems.
+        """
+        a = _make_term(st, "a")
+        b = _make_term(st, "b")
+        atom = _eq_atom(st, a, b)
+
+        # Simulate first search: mark atom as oriented
+        mark_oriented_eq(atom)
+        assert is_oriented_eq(atom)
+
+        # Simulate GivenClauseSearch.run() resetting state at start of new search
+        reset_orientation_state()
+
+        # The same atom should no longer appear oriented
+        assert not is_oriented_eq(atom)
+        assert not is_renamable_flip(atom)
+
+        # A fresh orient_equalities call should work correctly
+        clause = _clause(Literal(sign=True, atom=_eq_atom(st, a, b)))
+        oriented = orient_equalities(clause, st)
+        # Should produce a valid oriented clause without stale-state interference
+        assert oriented is not None

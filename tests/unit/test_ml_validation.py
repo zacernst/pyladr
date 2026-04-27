@@ -14,6 +14,7 @@ import math
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("torch_geometric")
 
 from pyladr.core.clause import Clause, Justification, JustType, Literal
 from pyladr.core.symbol import SymbolTable

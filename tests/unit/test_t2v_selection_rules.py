@@ -106,7 +106,7 @@ class TestT2VSelectionAnnotations:
             SelectionRule("W", SelectionOrder.WEIGHT, part=2),
             SelectionRule("T2V", SelectionOrder.TREE2VEC, part=1),
         ])
-        sos = ClauseList("sos")
+        sos = PrioritySOS("sos")
         for idx in range(8):
             c = _make_weighted_clause(5.0, idx + 1)
             sos.append(c)
@@ -125,7 +125,7 @@ class TestT2VSelectionAnnotations:
         gs = GivenSelection(rules=[
             SelectionRule("T2V", SelectionOrder.TREE2VEC, part=1),
         ])
-        sos = ClauseList("sos")
+        sos = PrioritySOS("sos")
         for idx in range(3):
             c = _make_weighted_clause(5.0, idx + 1)
             sos.append(c)
@@ -139,7 +139,7 @@ class TestT2VSelectionAnnotations:
         gs = GivenSelection(rules=[
             SelectionRule("T2V", SelectionOrder.TREE2VEC, part=1),
         ])
-        sos = ClauseList("sos")
+        sos = PrioritySOS("sos")
         for idx in range(3):
             sos.append(_make_weighted_clause(5.0, idx + 1))
 
@@ -157,20 +157,19 @@ class TestT2VSelectionAnnotations:
 class TestT2VFallbackBehavior:
     """Verify T2V selection falls back correctly without PrioritySOS."""
 
-    def test_t2v_falls_back_to_age_without_priority_sos(self) -> None:
-        """T2V on plain ClauseList falls back to age (first in list)."""
+    def test_t2v_raises_without_priority_sos(self) -> None:
+        """T2V on plain ClauseList raises ValueError (requires PrioritySOS)."""
         gs = GivenSelection(rules=[
             SelectionRule("T2V", SelectionOrder.TREE2VEC, part=1),
         ])
         sos = ClauseList("sos")
-        c1 = _make_weighted_clause(10.0, 1)  # oldest, heaviest
-        c2 = _make_weighted_clause(1.0, 2)   # newer, lighter
+        c1 = _make_weighted_clause(10.0, 1)
+        c2 = _make_weighted_clause(1.0, 2)
         sos.append(c1)
         sos.append(c2)
 
-        selected, name = gs.select_given(sos, 0)
-        assert selected is c1  # age-based = first
-        assert name == "T2V"
+        with pytest.raises(ValueError, match="requires PrioritySOS"):
+            gs.select_given(sos, 0)
 
     def test_t2v_priority_sos_fallback_to_pop_first(self) -> None:
         """T2V on PrioritySOS falls back to pop_first() when no FORTE scores."""

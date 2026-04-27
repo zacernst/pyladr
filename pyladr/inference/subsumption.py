@@ -302,6 +302,9 @@ def back_subsume_from_lists(
 # ── Predicate-sign index for back subsumption ────────────────────────────────
 
 
+_VAR_MARKER = 0  # Marker for variable positions in signature keys
+
+
 def _clause_pred_signs(c: Clause) -> set[tuple[int, bool]]:
     """Extract (predicate_symnum, sign) set from a clause's literals."""
     result: set[tuple[int, bool]] = set()
@@ -313,31 +316,67 @@ def _clause_pred_signs(c: Clause) -> set[tuple[int, bool]]:
     return result
 
 
+def _literal_signatures(c: Clause) -> list[tuple[int, bool, tuple[int, ...]]]:
+    """Extract structural signatures for each literal of a clause.
+
+    Each signature is (pred_symnum, sign, arg_roots) where arg_roots is a
+    tuple of the root symbol IDs for each argument of the predicate atom.
+    Variables use _VAR_MARKER (0) since private_symbol >= 0 means variable.
+
+    Returns one signature per literal (in order).
+    """
+    sigs: list[tuple[int, bool, tuple[int, ...]]] = []
+    for lit in c.literals:
+        atom = lit.atom
+        pred = -atom.private_symbol if atom.private_symbol < 0 else -1
+        # For each argument of the predicate, record the root symbol
+        # Variables get _VAR_MARKER; rigid symbols get their symnum
+        arg_roots: tuple[int, ...] = tuple(
+            (-a.private_symbol if a.private_symbol < 0 else _VAR_MARKER)
+            for a in atom.args
+        )
+        sigs.append((pred, lit.sign, arg_roots))
+    return sigs
+
+
 class BackSubsumptionIndex:
     """Hash-based index for fast back subsumption candidate retrieval.
 
-    Indexes clauses by (predicate_symnum, sign) of each literal.
-    For back subsumption, finds candidate victims by intersecting
-    the predicate-sign sets of the subsumer's literals.
+    Uses two levels of indexing:
+    1. Coarse: (predicate_symnum, sign) buckets for fast intersection.
+    2. Fine: (predicate_symnum, sign, arg_root_symbols) structural signature
+       buckets that capture the top-level argument structure of each literal.
 
-    This replaces linear scanning of clause lists with O(1) hash lookups
-    plus set intersection, dramatically reducing subsumes() calls.
+    For back subsumption, candidates are filtered by structural signature
+    compatibility (a subsumer literal with rigid arg roots can only match
+    literals with the same roots), plus weight bounds and literal count.
     """
 
-    __slots__ = ("_by_pred_sign", "_clauses", "_pred_signs_cache")
+    __slots__ = (
+        "_by_pred_sign", "_by_signature", "_clauses",
+        "_pred_signs_cache", "_sig_cache", "_weights",
+    )
 
     def __init__(self) -> None:
-        # Map: (symnum, sign) -> set of clause IDs
+        # Coarse: (symnum, sign) -> set of clause IDs
         self._by_pred_sign: dict[tuple[int, bool], set[int]] = {}
+        # Fine: (symnum, sign, arg_roots) -> set of clause IDs
+        self._by_signature: dict[tuple[int, bool, tuple[int, ...]], set[int]] = {}
         # Map: clause ID -> Clause
         self._clauses: dict[int, Clause] = {}
         # Cache: clause ID -> set of (symnum, sign) for deindex
         self._pred_signs_cache: dict[int, set[tuple[int, bool]]] = {}
+        # Cache: clause ID -> list of full signatures for deindex
+        self._sig_cache: dict[int, list[tuple[int, bool, tuple[int, ...]]]] = {}
+        # Cache: clause ID -> weight (for fast weight-bound filtering)
+        self._weights: dict[int, float] = {}
 
     def insert(self, c: Clause) -> None:
         """Add a clause to the back subsumption index."""
         cid = c.id
         self._clauses[cid] = c
+        self._weights[cid] = c.weight
+
         ps_set = _clause_pred_signs(c)
         self._pred_signs_cache[cid] = ps_set
         for key in ps_set:
@@ -347,39 +386,101 @@ class BackSubsumptionIndex:
                 self._by_pred_sign[key] = bucket
             bucket.add(cid)
 
+        sigs = _literal_signatures(c)
+        self._sig_cache[cid] = sigs
+        for sig in sigs:
+            bucket = self._by_signature.get(sig)
+            if bucket is None:
+                bucket = set()
+                self._by_signature[sig] = bucket
+            bucket.add(cid)
+
     def remove(self, c: Clause) -> None:
         """Remove a clause from the back subsumption index."""
         cid = c.id
         self._clauses.pop(cid, None)
+        self._weights.pop(cid, None)
+
         ps_set = self._pred_signs_cache.pop(cid, None)
-        if ps_set is None:
-            return
-        for key in ps_set:
-            bucket = self._by_pred_sign.get(key)
-            if bucket is not None:
-                bucket.discard(cid)
+        if ps_set is not None:
+            for key in ps_set:
+                bucket = self._by_pred_sign.get(key)
+                if bucket is not None:
+                    bucket.discard(cid)
+
+        sigs = self._sig_cache.pop(cid, None)
+        if sigs is not None:
+            for sig in sigs:
+                bucket = self._by_signature.get(sig)
+                if bucket is not None:
+                    bucket.discard(cid)
+
+    def _sig_compatible_ids(
+        self, pred: int, sign: bool, arg_roots: tuple[int, ...]
+    ) -> set[int] | None:
+        """Find clause IDs with a literal whose signature is compatible.
+
+        A candidate literal d_lit is compatible with subsumer literal c_lit if
+        for every position where c_lit has a rigid symbol, d_lit has the same
+        symbol (variables in c_lit can match anything in d_lit).
+
+        If all args in the subsumer are rigid, we can do a single hash lookup.
+        If any arg is a variable (_VAR_MARKER), we must union over all matching
+        signatures, falling back to the coarse (pred, sign) bucket.
+        """
+        has_var = _VAR_MARKER in arg_roots
+        if not has_var:
+            # All args rigid: exact signature match required
+            bucket = self._by_signature.get((pred, sign, arg_roots))
+            return bucket  # may be None
+
+        # Variable args: fall back to coarse (pred, sign) bucket since the
+        # subsumer variable can match any argument structure.
+        return self._by_pred_sign.get((pred, sign))
 
     def candidates(self, c: Clause) -> list[Clause]:
         """Find clauses that could potentially be subsumed by c.
 
-        Returns clauses whose literals' (predicate, sign) pairs are a
-        superset of c's. This is a necessary condition for c to subsume d:
-        every literal of c must match some literal of d with the same
-        predicate symbol and sign.
+        Uses structural signature matching: for each literal of c, finds
+        candidate clauses with a compatible literal (same pred, sign, and
+        matching top-level argument roots). Intersects across all literals.
+
+        Also filters by weight and literal count bounds.
         """
         nc = c.num_literals
         if nc == 0:
             return []
 
-        ps_set = _clause_pred_signs(c)
+        sigs = _literal_signatures(c)
 
-        # Find intersection of all buckets
+        # Collect candidate sets per (pred, sign) — use finest available filter.
+        # Group signatures by (pred, sign) to handle multi-literal clauses.
+        from collections import defaultdict
+        by_ps: dict[tuple[int, bool], list[tuple[int, ...]]] = defaultdict(list)
+        for pred, sign, arg_roots in sigs:
+            by_ps[(pred, sign)].append(arg_roots)
+
         sets: list[set[int]] = []
-        for key in ps_set:
-            bucket = self._by_pred_sign.get(key)
-            if bucket is None:
-                return []  # No clause has this (pred, sign) → c can't subsume anything
-            sets.append(bucket)
+        for (pred, sign), arg_root_list in by_ps.items():
+            # For this (pred, sign), union all compatible signatures
+            combined: set[int] | None = None
+            for arg_roots in arg_root_list:
+                bucket = self._sig_compatible_ids(pred, sign, arg_roots)
+                if bucket is None:
+                    # No candidates for this specific signature; if all sigs for
+                    # this pred-sign fail, the intersection will be empty
+                    continue
+                if combined is None:
+                    combined = set(bucket)
+                else:
+                    combined |= bucket
+
+            if combined is None or not combined:
+                return []  # No clause matches this (pred, sign) requirement
+            sets.append(combined)
+
+        if not sets:
+            return []
 
         # Intersect: start with smallest set for efficiency
         sets.sort(key=len)
@@ -389,14 +490,17 @@ class BackSubsumptionIndex:
             if not result_ids:
                 return []
 
-        # Filter: c cannot subsume itself, and nc <= nd required
+        # Filter: c cannot subsume itself, nc <= nd required,
+        # and c.weight <= d.weight required (subsumer cannot be heavier).
         cid = c.id
+        cw = c.weight
+        weights = self._weights
         candidates = []
         for did in result_ids:
             if did == cid:
                 continue
             d = self._clauses.get(did)
-            if d is not None and nc <= d.num_literals:
+            if d is not None and nc <= d.num_literals and cw <= weights[did]:
                 candidates.append(d)
         return candidates
 

@@ -103,7 +103,14 @@ class Literal:
 
     @property
     def is_eq_literal(self) -> bool:
-        """Check if this literal's atom is an equality (= predicate)."""
+        """Check if this literal's atom is an equality (= predicate).
+
+        WARNING: This checks arity == 2 only, NOT the symbol name.  It will
+        return True for any binary predicate, not just equality.  For accurate
+        equality detection when a SymbolTable is available, use
+        ``pyladr.inference.paramodulation.is_eq_atom(lit.atom, symbol_table)``
+        or ``pyladr.inference.paramodulation.pos_eq/neg_eq`` instead.
+        """
         return self.atom.is_complex and self.atom.arity == 2
 
     def complementary(self, other: Literal) -> bool:
@@ -163,6 +170,14 @@ class Clause:
     # Cached property — set in __post_init__, avoids repeated len() calls
     _num_literals: int = 0
 
+    def __lt__(self, other: object) -> bool:
+        """Comparison for heapq tie-breaking: lighter weight wins, then lower id."""
+        if not isinstance(other, Clause):
+            return NotImplemented
+        if self.weight != other.weight:
+            return self.weight < other.weight
+        return self.id < other.id
+
     def __post_init__(self) -> None:
         # Ensure literals is a tuple
         if not isinstance(self.literals, tuple):
@@ -209,14 +224,6 @@ class Clause:
     @property
     def num_literals(self) -> int:
         return self._num_literals
-
-    @property
-    def positive_literals(self) -> tuple[Literal, ...]:
-        return tuple(lit for lit in self.literals if lit.sign)
-
-    @property
-    def negative_literals(self) -> tuple[Literal, ...]:
-        return tuple(lit for lit in self.literals if not lit.sign)
 
     def variables(self) -> set[int]:
         """Set of all variable numbers in this clause."""

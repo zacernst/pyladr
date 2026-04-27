@@ -400,7 +400,8 @@ class TestIntegrationRobustness:
             given = _make_clause(i)
             integration.on_given_selected(given, "T")
             child = _make_clause(i + 1000)
-            integration.on_clause_kept(child, given=given)
+            # on_clause_kept no longer collects experiences; use deletion events
+            integration.on_clause_deleted(child, OutcomeType.SUBSUMED, given=given)
 
         assert integration.stats.experiences_collected == 100
 
@@ -426,7 +427,9 @@ class TestIntegrationRobustness:
                     child, OutcomeType.SUBSUMED, given=given,
                 )
 
-        assert integration.stats.experiences_collected == 50
+        # on_clause_kept no longer collects experiences; only deleted clauses count
+        # 50 iterations: i%3==0 → kept (17 times, no experience), else → deleted (33 times)
+        assert integration.stats.experiences_collected == 33
         buf = manager._buffer
         assert buf.num_productive + buf.num_unproductive == buf.size
 
@@ -489,7 +492,8 @@ class TestStatsReporting:
 
         for i in range(200):
             child = _make_clause(i + 100)
-            integration.on_clause_kept(child, given=given)
+            # on_clause_kept no longer collects experiences; use deletion events
+            integration.on_clause_deleted(child, OutcomeType.SUBSUMED, given=given)
 
         s = integration.stats
         assert s.experiences_collected == 200

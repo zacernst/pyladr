@@ -21,7 +21,6 @@ from pyladr.core.symbol import SymbolTable
 from pyladr.core.term import Term
 from pyladr.parsing.ladr_parser import LADRParser, ParseError
 import logging
-import sys
 
 _logger = logging.getLogger(__name__)
 

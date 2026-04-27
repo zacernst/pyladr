@@ -40,6 +40,12 @@ class TestDefaultBehaviorUnchanged:
             if any(kw in attr_name.lower() for kw in ("ml_", "embed", "neural", "gnn", "graph_")):
                 val = getattr(opts, attr_name)
                 # If ML fields exist, they must default to disabled/None/False
+                # Dimension, rate, and dump-path parameters are configuration values,
+                # not activation flags — non-zero defaults are expected.
+                if attr_name.endswith("_dim") or attr_name.endswith("_rate") or attr_name.endswith("_embeddings"):
+                    continue
+                if "dump_embeddings" in attr_name:
+                    continue
                 assert val is None or val is False or val == 0, (
                     f"ML-related option '{attr_name}' has non-disabled default: {val}"
                 )
@@ -141,6 +147,46 @@ class TestMLModuleAbsence:
         search = GivenClauseSearch(options=opts)
         result = search.run(usable=[], sos=[c1, c2, c3])
         assert result.exit_code == ExitCode.MAX_PROOFS_EXIT
+
+
+class TestMLGracefulDegradation:
+    """Verify ML components degrade gracefully when unavailable."""
+
+    def test_noop_provider_satisfies_protocol(self):
+        """NoOpEmbeddingProvider must satisfy the runtime_checkable EmbeddingProvider protocol."""
+        from pyladr.ml.embedding_provider import NoOpEmbeddingProvider
+        from pyladr.protocols import EmbeddingProvider
+
+        noop = NoOpEmbeddingProvider()
+        assert isinstance(noop, EmbeddingProvider)
+
+    def test_create_factory_falls_back_to_noop_without_torch(self):
+        """create_embedding_provider returns NoOp when torch is unavailable."""
+        import pyladr.ml.embedding_provider as ep_mod
+
+        # Temporarily patch _ML_AVAILABLE to False to simulate torch absence
+        original = ep_mod._ML_AVAILABLE
+        try:
+            ep_mod._ML_AVAILABLE = False
+            provider = ep_mod.create_embedding_provider()
+            assert isinstance(provider, ep_mod.NoOpEmbeddingProvider)
+        finally:
+            ep_mod._ML_AVAILABLE = original
+
+    def test_noop_provider_embedding_dim_propagates(self):
+        """NoOp provider respects custom embedding_dim from config."""
+        from pyladr.ml.embedding_provider import NoOpEmbeddingProvider
+
+        noop = NoOpEmbeddingProvider(embedding_dim=1024)
+        assert noop.embedding_dim == 1024
+        # Batch still returns correct-length None list
+        from pyladr.core.clause import Clause, Literal
+        from pyladr.core.term import get_rigid_term
+
+        P = get_rigid_term(1, 1, (get_rigid_term(2, 0),))
+        c = Clause(literals=(Literal(sign=True, atom=P),))
+        assert noop.get_embedding(c) is None
+        assert noop.get_embeddings_batch([c, c, c]) == [None, None, None]
 
 
 class TestMLFeatureGating:

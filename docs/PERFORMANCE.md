@@ -4,23 +4,33 @@
 
 ### Typical Throughput
 
-PyLADR processes 1,000–10,000 inferences per second depending on problem characteristics:
+PyLADR throughput varies significantly by problem type. Measured on
+representative benchmark problems (April 2026):
 
-- **Simple resolution:** ~10,000 inferences/sec (small clauses, no equality)
-- **Equational reasoning:** ~3,000–5,000 inferences/sec (paramodulation + demodulation)
-- **AC unification:** ~1,000–2,000 inferences/sec (diophantine equation overhead)
+| Problem type | given/sec | generated/sec | Notes |
+|-------------|-----------|---------------|-------|
+| Equational (para+demod+back_demod) | 6–9 | 600–1,100 | Ring commutativity, lattice problems |
+| Resolution + hyperresolution | 4–6 | 1,000–1,400 | Condensed detachment (Luka20) |
+
+The given/sec rate is the primary throughput metric — it reflects selection,
+inference, simplification, and subsumption per iteration of the main loop.
 
 ### Bottleneck Breakdown
 
-For a typical search with paramodulation:
+For a typical equational search (paramodulation + demodulation + back-demod):
 
 | Phase | % Time | Notes |
 |-------|--------|-------|
-| Inference generation | 40–50% | Resolution + paramodulation |
-| Subsumption checking | 20–30% | Forward + backward |
-| Demodulation | 10–15% | Term rewriting |
-| Indexing | 5–10% | Discrimination tree operations |
-| Selection + bookkeeping | 5–10% | Given clause selection, statistics |
+| Back-subsumption + back-demodulation | 55–70% | Dominates on medium/large problems |
+| Forward demodulation | 15–20% | Term rewriting of new clauses |
+| Inference generation | 6–10% | Paramodulation, resolution |
+| Forward subsumption | 5–8% | Checking new clauses against existing |
+| Selection + bookkeeping | 2–5% | Given clause selection, statistics |
+
+Back-subsumption is the dominant cost because each kept clause must be
+checked against all existing clauses for subsumption. On non-equational
+problems (resolution only), forward+backward subsumption together account
+for 80–90% of search time.
 
 ## Optimization Strategies
 

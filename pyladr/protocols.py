@@ -95,24 +95,3 @@ class ClauseEncoder(Protocol):
     def eval(self) -> None:
         """Set eval mode."""
         ...
-
-
-# ── PenaltyComputer ─────────────────────────────────────────────────────
-
-
-@runtime_checkable
-class PenaltyComputer(Protocol):
-    """Protocol for clause penalty computation.
-
-    Implementations compute a non-negative penalty score for a clause.
-    Higher scores = more penalized = less likely to be selected.
-
-    Existing penalty systems that should eventually implement this:
-      - penalty_propagation (inherited parent penalty)
-      - repetition_penalty (repeated subterm patterns)
-      - nucleus_penalty (overly general nucleus literals)
-      - penalty_weight (weight adjustment from combined penalties)
-    """
-
-    def compute(self, clause: "Clause") -> float:
-        ...

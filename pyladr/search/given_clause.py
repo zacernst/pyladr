@@ -38,6 +38,7 @@ from pyladr.inference.paramodulation import (
     is_eq_atom,
     orient_equalities,
     para_from_into,
+    reset_orientation_state,
 )
 from pyladr.inference.demodulation import (
     DemodType,
@@ -55,7 +56,7 @@ from pyladr.inference.subsumption import (
     subsumes,
 )
 from pyladr.indexing.literal_index import LiteralIndex
-from pyladr.parallel.inference_engine import ParallelInferenceEngine, ParallelSearchConfig
+from pyladr.parallel.inference_engine import ParallelInferenceEngine
 from pyladr.search.lazy_demod import LazyDemodState
 from pyladr.search.penalty_propagation import (
     PenaltyCache,
@@ -90,55 +91,8 @@ from pyladr.search.statistics import SearchStatistics
 logger = logging.getLogger(__name__)
 
 
-# ── Unit conflict index ─────────────────────────────────────────────────────
-
-def _term_key(t) -> tuple:
-    """Compute a hashable structural key for a term (recursive tuple)."""
-    if not t.args:
-        return (t.private_symbol,)
-    return (t.private_symbol, *((_term_key(a)) for a in t.args))
-
-
-class UnitConflictIndex:
-    """O(1) lookup index for unit conflict detection.
-
-    Stores unit clauses keyed by (sign, atom_key). When a new unit clause
-    arrives, look up its complement in O(1) instead of scanning all usable.
-    """
-
-    __slots__ = ("_by_key",)
-
-    def __init__(self) -> None:
-        # Map: (sign, atom_key) -> Clause
-        self._by_key: dict[tuple, Clause] = {}
-
-    def insert(self, c: Clause) -> None:
-        """Add a unit clause to the index."""
-        if not c.is_unit:
-            return
-        lit = c.literals[0]
-        key = (lit.sign, _term_key(lit.atom))
-        # Keep the first (oldest) clause for each key
-        if key not in self._by_key:
-            self._by_key[key] = c
-
-    def remove(self, c: Clause) -> None:
-        """Remove a unit clause from the index."""
-        if not c.is_unit:
-            return
-        lit = c.literals[0]
-        key = (lit.sign, _term_key(lit.atom))
-        stored = self._by_key.get(key)
-        if stored is not None and stored.id == c.id:
-            del self._by_key[key]
-
-    def find_complement(self, c: Clause) -> Clause | None:
-        """Find a unit clause complementary to c. O(1) lookup."""
-        if not c.is_unit:
-            return None
-        lit = c.literals[0]
-        comp_key = (not lit.sign, _term_key(lit.atom))
-        return self._by_key.get(comp_key)
+# ── Unit conflict index (canonical definition in pyladr.search.unit_conflict)
+from pyladr.search.unit_conflict import UnitConflictIndex  # noqa: E402
 
 
 # ── Exit codes matching C search.h ──────────────────────────────────────────
@@ -156,226 +110,9 @@ class ExitCode(IntEnum):
     FATAL_EXIT = 7
 
 
-# ── Search options ──────────────────────────────────────────────────────────
-
-
-@dataclass(slots=True)
-class SearchOptions:
-    """Search options matching C search options.
-
-    Controls inference rules, limits, and output.
-    """
-
-    # Inference rules
-    binary_resolution: bool = True
-    paramodulation: bool = False
-    hyper_resolution: bool = False
-    factoring: bool = True
-    para_into_vars: bool = False
-
-    # Limits (C: max_given, max_kept, max_seconds, max_generated, max_proofs, max_weight)
-    max_given: int = -1       # -1 = no limit
-    max_kept: int = -1
-    max_seconds: float = -1.0
-    max_generated: int = -1
-    max_proofs: int = 1
-    max_weight: float = -1.0  # -1 = no limit
-    max_weight_tighten_after: int = 0    # tighten max_weight after N given clauses (0 = disabled)
-    max_weight_tighten_to: float = -1.0  # new max_weight cap after the threshold is reached
-
-    # Demodulation
-    demodulation: bool = False
-    lex_dep_demod_lim: int = 0
-    lex_order_vars: bool = False
-    demod_step_limit: int = 1000
-    back_demod: bool = False
-
-    # Simplification
-    check_tautology: bool = True
-    merge_lits: bool = True
-
-    # Parallelization
-    parallel: ParallelSearchConfig | None = None
-
-    # Priority SOS: heap-based O(log n) weight selection + O(1) removal
-    priority_sos: bool = True
-
-    # Lazy demodulation: defer lex-dependent rewrites until selection
-    lazy_demod: bool = False
-
-    # Back-subsumption check: at given clause #N, check kept/back_subsumed ratio.
-    # If ratio > 20, disable backward subsumption (C: backsub_check, default 500).
-    # -1 = never check (always keep back subsumption enabled).
-    backsub_check: int = 500
-
-    # SOS limit: max clauses in SOS before culling (C: sos_limit)
-    sos_limit: int = -1  # -1 = no limit
-
-    # Weight-based selection ratio: how many times per cycle the lightest
-    # clause is chosen.  Age always gets 1 slot; this controls the W slots.
-    # Default 4 matches C Prover9's age_factor=5 (1 age + 4 weight = 5 total).
-    weight_ratio: int = 4
-
-    # Entropy-based selection: ratio weight for entropy selector in the cycle.
-    # 0 = disabled (default). e.g., entropy_weight=2 with default ratio=5
-    # gives cycle: 1 age + 4 weight + 2 entropy = 7 total.
-    entropy_weight: int = 0
-
-    # Unification penalty selection: ratio weight for penalty selector.
-    # 0 = disabled (default). Prefers most specific clauses (lowest penalty).
-    # e.g., unification_weight=2 gives cycle: 1 age + 4 weight + 2 penalty.
-    unification_weight: int = 0
-
-    # Penalty propagation: derived clauses inherit penalties from overly general parents.
-    # Targets "unifies with everything" patterns where variables in antecedents
-    # don't appear in consequents (e.g., ¬P(x) ∨ Q resolved with P(t) → Q).
-    # Disabled by default for C Prover9 compatibility.
-    penalty_propagation: bool = False
-    penalty_propagation_mode: str = "additive"  # "additive", "multiplicative", "max"
-    penalty_propagation_decay: float = 0.5      # Decay factor per generation (0.0-1.0)
-    penalty_propagation_threshold: float = 5.0  # Only propagate if parent penalty >= this
-    penalty_propagation_max_depth: int = 3      # Max inheritance depth (0 = unlimited)
-    penalty_propagation_max: float = 20.0       # Cap on accumulated penalty
-
-    # Subformula repetition penalty: penalizes clauses with repeated structural patterns.
-    # Detects repeated subterms (e.g., multiple i(x,x)) and adds a penalty per extra occurrence.
-    # Disabled by default for C Prover9 compatibility.
-    repetition_penalty: bool = False
-    repetition_penalty_weight: float = 2.0     # Penalty per extra occurrence of a repeated subterm
-    repetition_penalty_min_size: int = 2        # Minimum subterm symbol_count to consider
-    repetition_penalty_max: float = 15.0        # Cap on total repetition penalty
-    repetition_penalty_normalize: bool = False  # Variable-agnostic matching (i(x,x) ≡ i(y,y))
-
-    # Nucleus unification penalty: penalizes clauses whose negative literals act as
-    # overly permissive nuclei in hyperresolution — matching too many satellites due
-    # to variable-dominated argument positions. Disabled by default for C Prover9 compatibility.
-    nucleus_unification_penalty: bool = False
-    nucleus_penalty_threshold: float = 3.0    # Min penalty to apply (filters noise)
-    nucleus_penalty_weight: float = 1.5       # Base penalty per overly general nucleus literal
-    nucleus_penalty_max: float = 15.0         # Cap on total nucleus penalty
-    nucleus_penalty_cache_size: int = 10000   # Max cached nucleus patterns (LRU eviction)
-
-    # Penalty weight adjustment: inflates clause weight based on combined penalty score.
-    # High-penalty clauses (overly general or structurally redundant) get pushed down
-    # the selection queue by increasing their weight. Composable with penalty_propagation
-    # and repetition_penalty. Disabled by default for C Prover9 compatibility.
-    penalty_weight_enabled: bool = False
-    penalty_weight_threshold: float = 5.0      # Only adjust if penalty >= this value
-    penalty_weight_multiplier: float = 2.0     # Weight increase factor (>= 1.0)
-    penalty_weight_max: float = 1000.0         # Cap on adjusted weight
-    penalty_weight_mode: str = "exponential"   # "linear", "exponential", "step"
-
-    # Hints: weight bonus for clauses matching hint patterns.
-    # hint_wt is the weight assigned to matched clauses (lower = preferred).
-    # A kept clause matches a hint if the hint subsumes the clause.
-    hint_wt: float = 1.0
-
-    # Output
-    print_given: bool = True
-    print_kept: bool = False
-    print_gen: bool = False
-    print_given_stats: bool = False
-    quiet: bool = False
-
-    # Machine Learning Integration
-    online_learning: bool = False
-    ml_weight: float | None = None  # None = auto-determine
-    embedding_dim: int = 32
-    goal_directed: bool = False
-    goal_proximity_weight: float = 0.3
-    embedding_evolution_rate: float = 0.01
-    learn_from_back_subsumption: bool = False
-    learn_from_forward_subsumption: bool = False
-
-    # FORTE Embedding Integration
-    forte_embeddings: bool = False
-    forte_weight: float = 0.0   # selection ratio weight (0 = disabled)
-    forte_embedding_dim: int = 128
-    forte_cache_max_entries: int = 10_000
-
-    # Tree2Vec Embedding Integration
-    tree2vec_embeddings: bool = False
-    tree2vec_weight: float = 0.0   # selection ratio weight (0 = disabled)
-    tree2vec_embedding_dim: int = 64
-    tree2vec_cache_max_entries: int = 10_000
-    tree2vec_include_position: bool = False  # encode argument position in walk tokens
-    tree2vec_include_depth: bool = False     # encode tree depth in walk tokens
-    tree2vec_include_var_identity: bool = False  # De Bruijn-style variable identity in walk tokens
-    tree2vec_skip_predicate: bool = True     # skip predicate wrapper, walk from args directly
-    tree2vec_include_path_length: bool = True   # prepend path length token to PATH walks
-    tree2vec_composition: str = "weighted_depth"  # embedding composition: mean, weighted_depth, root_concat
-    tree2vec_online_learning: bool = False   # enable online tree2vec updates during search
-    tree2vec_online_update_interval: int = 20  # clauses kept between online updates
-    tree2vec_online_batch_size: int = 10     # max clauses per online update batch
-    tree2vec_online_lr: float = 0.005        # learning rate for online skipgram updates
-    tree2vec_online_max_updates: int = 0     # stop updating after N retrainings (0 = unlimited)
-    tree2vec_bg_update: bool = True   # run update_online on a daemon thread (False = sync, useful for tests)
-    tree2vec_dump_embeddings: str = ""  # path to write SOS embedding JSON after each training; "" = disabled
-    tree2vec_goal_proximity: bool = False    # enable goal-directed tree2vec selection
-    tree2vec_goal_proximity_weight: float = 0.3  # goal proximity influence weight
-    tree2vec_cross_arg_proximity: bool = True  # cross-argument proximity for CD compatibility
-    tree2vec_proximity_report_interval: int = 100  # given clauses between proximity trend reports
-    tree2vec_maximin_weight: float = 0.0  # selection ratio weight for maximin T2V (0 = disabled)
-    tree2vec_model_path: str = ""   # path to pre-trained model; "" = train on initial clauses
-
-    # RNN2Vec Embedding Integration
-    rnn2vec_embeddings: bool = False
-    rnn2vec_weight: float = 0.0        # selection ratio weight (0 = disabled)
-    rnn2vec_rnn_type: str = "gru"      # lstm, gru, elman
-    rnn2vec_hidden_dim: int = 64
-    rnn2vec_embedding_dim: int = 64
-    rnn2vec_input_dim: int = 32
-    rnn2vec_num_layers: int = 1
-    rnn2vec_bidirectional: bool = False
-    rnn2vec_composition: str = "mean"  # last_hidden, mean_pool, attention_pool
-    rnn2vec_cache_max_entries: int = 10_000
-    rnn2vec_online_learning: bool = False
-    rnn2vec_online_update_interval: int = 20
-    rnn2vec_online_batch_size: int = 10
-    rnn2vec_online_lr: float = 0.001
-    rnn2vec_online_max_updates: int = 0
-    rnn2vec_model_path: str = ""       # pre-trained model directory; "" = train on initial clauses
-    rnn2vec_save_model: str = ""       # save trained model to this directory after training; "" = don't save
-    rnn2vec_training_epochs: int = 5
-    rnn2vec_training_lr: float = 0.001
-    rnn2vec_goal_proximity: bool = False          # enable goal-directed rnn2vec selection
-    rnn2vec_goal_proximity_weight: float = 0.3   # goal proximity influence weight
-    rnn2vec_random_goal_weight: float = 0.0      # selection ratio for random-goal proximity mode
-    rnn2vec_dump_embeddings: str = ""            # path to write SOS embedding JSON; "" = disabled
-
-    # Proof-guided selection: learn from successful proof patterns.
-    # Requires FORTE embeddings (forte_embeddings=True).
-    # Blends exploitation (similarity to proof patterns) with exploration (diversity).
-    proof_guided: bool = False
-    proof_guided_weight: float = 0.0               # Selection ratio weight (0 = disabled in cycle)
-    proof_guided_exploitation_ratio: float = 0.7   # 0.0=pure exploration, 1.0=pure exploitation
-    proof_guided_max_patterns: int = 500            # Max stored proof pattern embeddings
-    proof_guided_decay_rate: float = 0.95           # Exponential decay per proof event (0,1]
-    proof_guided_min_similarity: float = 0.1        # Minimum cosine similarity threshold
-    proof_guided_warmup_proofs: int = 1             # Proofs required before activation
-
-    def __post_init__(self) -> None:
-        """Validate option bounds and cross-field constraints."""
-        from pyladr.search.options import validate_search_options
-
-        errors = validate_search_options(self)
-        if errors:
-            raise ValueError(
-                "Invalid SearchOptions:\n  " + "\n  ".join(errors)
-            )
-
-    def validate(self) -> list[str]:
-        """Re-validate after mutation (e.g. LADR assign directives).
-
-        Returns list of error and warning strings, empty if valid.
-        Includes both bounds errors and semantic warnings.
-        """
-        from pyladr.search.options import (
-            validate_search_options,
-            validate_search_options_semantic,
-        )
-
-        return validate_search_options(self) + validate_search_options_semantic(self)
+# ── Search options (canonical definition in pyladr.search.options) ──────────
+# Re-exported here for backward compatibility with existing import paths.
+from pyladr.search.options import SearchOptions  # noqa: E402
 
 
 # ── Proof result ────────────────────────────────────────────────────────────
@@ -497,6 +234,58 @@ class GivenClauseSearch:
         result = search.run(usable_clauses, sos_clauses)
     """
 
+    # ── EmbeddingManager extraction candidates ──────────────────────────
+    #
+    # The following 22 __slots__ entries and 24 methods belong to embedding
+    # management (FORTE, Tree2Vec, RNN2Vec, proof patterns) and should be
+    # extracted into pyladr.search.embedding_manager.EmbeddingManager.
+    # See embedding_manager.py for the target interface skeleton.
+    #
+    # Slots to move:
+    #   _forte_provider, _forte_embeddings,
+    #   _tree2vec_provider, _tree2vec_embeddings,
+    #   _t2v_kept_since_update, _t2v_online_batch, _t2v_goal_clauses,
+    #   _t2v_goal_provider, _t2v_goal_clause_ids,
+    #   _t2v_distance_window, _t2v_distance_prev_avg,
+    #   _t2v_initial_goal_count, _t2v_all_given_distances,
+    #   _t2v_update_count, _t2v_bg_updater, _t2v_completion_queue,
+    #   _t2v_antecedent_embeddings, _t2v_goal_arg_embs, _t2v_goal_ant_embs,
+    #   _rnn2vec_provider, _rnn2vec_embeddings,
+    #   _r2v_kept_since_update, _r2v_online_batch,
+    #   _r2v_update_count, _r2v_bg_updater, _r2v_completion_queue,
+    #   _r2v_goal_provider, _r2v_goal_clauses,
+    #   _proof_pattern_memory
+    #
+    # Methods to move (24 methods, ~1,400 lines):
+    #   _init_embeddings (L619)
+    #   _maybe_init_rnn2vec (L1207)
+    #   _r2v_select_most_diverse (L1351)
+    #   _r2v_select_random_goal (L1383)
+    #   _do_r2v_online_update (L1421)
+    #   _on_r2v_update_done (L1450)
+    #   _process_r2v_completions (L1454)
+    #   _save_r2v_model (L1484)
+    #   _do_t2v_online_update (L2281)
+    #   _do_t2v_online_update_sync (L2311)
+    #   _on_t2v_update_done (L2429)
+    #   _process_t2v_completions (L2437)
+    #   _dump_t2v_embeddings (L2478)
+    #   _dump_r2v_embeddings (L2570)
+    #   _t2v_cross_arg_distance (L2646)
+    #   _t2v_select_nearest_goal (L2665)
+    #   _t2v_select_maximin (L2707)
+    #   _record_proof_patterns (L2998)
+    #   _compute_t2v_histogram (L3148)
+    #   _compute_t2v_cumulative_histogram (L3196)
+    #
+    # Properties to move:
+    #   forte_embeddings, forte_provider, proof_pattern_memory
+    #
+    # Module-level functions to move:
+    #   format_t2v_histogram (L416), _get_antecedent_term (L453),
+    #   _t2v_cosine (L470)
+    # ──────────────────────────────────────────────────────────────────────
+
     __slots__ = (
         "_opts", "_state", "_selection", "_proofs", "_all_clauses",
         "_symbol_table", "_demod_index", "_parallel_engine",
@@ -506,6 +295,7 @@ class GivenClauseSearch:
         "_nucleus_penalty_config", "_nucleus_pattern_cache",
         "_back_subsume_enabled",
         "_back_subsumption_callback", "_forward_subsumption_callback",
+        # ── EmbeddingManager candidates (22 slots) ──
         "_forte_provider", "_forte_embeddings",
         "_tree2vec_provider", "_tree2vec_embeddings",
         "_t2v_kept_since_update", "_t2v_online_batch", "_t2v_goal_clauses",
@@ -521,6 +311,7 @@ class GivenClauseSearch:
         "_r2v_update_count", "_r2v_bg_updater", "_r2v_completion_queue",
         "_r2v_goal_provider", "_r2v_goal_clauses",
         "_proof_pattern_memory",
+        # ── End EmbeddingManager candidates ──
         "_hints",
         "_rep_penalty_cache",
     )
@@ -565,14 +356,13 @@ class GivenClauseSearch:
 
     # ── Initialization helpers ─────────────────────────────────────────
     #
-    # Future decomposition: these groups could become standalone classes:
-    #   - EmbeddingManager: owns _forte_*, _tree2vec_*, _t2v_*, _proof_pattern_memory
-    #     with methods get_forte_embedding(), get_tree2vec_embedding(), record_proof_patterns()
+    # Planned decomposition (see embedding_manager.py for target interface):
+    #   - EmbeddingManager: owns 22 _forte_*/_tree2vec_*/_t2v_*/_rnn2vec_*/_r2v_*
+    #     slots + 24 methods (~1,400 lines). Skeleton in embedding_manager.py.
     #   - PenaltyManager: owns _penalty_cache, _repetition_config, _penalty_weight_config,
     #     _nucleus_*, _rep_penalty_cache with methods get_clause_penalty(), compute_and_cache()
     #   TODO: Unify the 4 penalty systems (penalty_propagation, repetition_penalty,
-    #   nucleus_penalty, penalty_weight) behind the PenaltyComputer protocol
-    #   defined in pyladr.protocols.
+    #   nucleus_penalty, penalty_weight) behind a common protocol.
     # Blocked today by deep cross-method access (18 embedding slots read/written in 10+ methods).
 
     def _init_selection(self, selection: GivenSelection | None) -> GivenSelection:
@@ -966,6 +756,11 @@ class GivenClauseSearch:
             SearchResult with exit code, proofs, and statistics.
         """
         self._state.stats.start()
+
+        # Reset module-level orientation state so this search starts clean.
+        # Without this, orientation marks from previous searches leak across
+        # problem boundaries (the sets grow forever and are never cleared).
+        reset_orientation_state()
 
         # Move initial clauses into state (C: move_clauses_to_clist)
         self._init_clauses(usable or [], sos or [], original_goals or [])
@@ -1454,6 +1249,8 @@ class GivenClauseSearch:
 
     def _process_r2v_completions(self) -> None:
         """Drain completion notifications from the R2V background updater."""
+        if self._r2v_bg_updater is None:
+            return
         import queue as _queue
         while True:
             try:
@@ -2439,6 +2236,8 @@ class GivenClauseSearch:
         Called from the main thread at the start of each given-clause step
         to process any updates that finished while the main loop was running.
         """
+        if self._t2v_bg_updater is None:
+            return
         import queue as _queue
         while True:
             try:

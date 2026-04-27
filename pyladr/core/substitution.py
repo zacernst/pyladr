@@ -16,8 +16,6 @@ unify/match logic accounts for this consistently.
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
-
 from pyladr.core.term import MAX_VARS, Term, copy_term, get_rigid_term, get_variable_term
 
 
@@ -35,20 +33,6 @@ def reset_multiplier() -> None:
     """Reset the multiplier counter (for testing)."""
     global _multiplier_counter
     _multiplier_counter = itertools.count()
-
-
-# ── Trail entry ───────────────────────────────────────────────────────────────
-
-
-@dataclass(slots=True)
-class TrailEntry:
-    """Single binding record for undo (C struct trail).
-
-    Records that variable `varnum` in `context` was bound.
-    """
-
-    varnum: int
-    context: Context
 
 
 # ── Context ───────────────────────────────────────────────────────────────────
@@ -109,12 +93,17 @@ class Trail:
     """Trail of bindings for backtracking (C Trail linked list).
 
     Supports bind-with-trail and undo operations.
+
+    Entries are stored as plain (varnum, context) tuples instead of
+    dataclass instances to eliminate per-bind allocation overhead in
+    the hottest path of the search loop.
     """
 
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "_size")
 
     def __init__(self) -> None:
-        self._entries: list[TrailEntry] = []
+        self._entries: list[tuple[int, Context]] = []
+        self._size: int = 0
 
     def bind(self, varnum: int, ctx: Context, term: Term, term_ctx: Context | None) -> None:
         """Bind variable in context and record on trail.
@@ -125,16 +114,19 @@ class Trail:
         """
         ctx.terms[varnum] = term
         ctx.contexts[varnum] = term_ctx
-        self._entries.append(TrailEntry(varnum=varnum, context=ctx))
+        self._entries.append((varnum, ctx))
+        self._size += 1
 
     def undo(self) -> None:
         """Undo all bindings on this trail (C undo_subst).
 
         Walks the trail in reverse, clearing each binding.
         """
-        for entry in reversed(self._entries):
-            entry.context.unbind(entry.varnum)
+        for varnum, ctx in reversed(self._entries):
+            ctx.terms[varnum] = None
+            ctx.contexts[varnum] = None
         self._entries.clear()
+        self._size = 0
 
     def undo_to(self, position: int) -> None:
         """Undo bindings back to a saved position (C partial trail rollback).
@@ -142,25 +134,28 @@ class Trail:
         Used by unify() to restore state when complex term arg unification
         fails partway through.
         """
-        while len(self._entries) > position:
-            entry = self._entries.pop()
-            entry.context.unbind(entry.varnum)
+        entries = self._entries
+        while self._size > position:
+            varnum, ctx = entries.pop()
+            ctx.terms[varnum] = None
+            ctx.contexts[varnum] = None
+            self._size -= 1
 
     @property
     def position(self) -> int:
         """Current trail position (for saving/restoring)."""
-        return len(self._entries)
+        return self._size
 
     @property
     def is_empty(self) -> bool:
-        return len(self._entries) == 0
+        return self._size == 0
 
     def vars_in_trail(self) -> list[int]:
         """Return list of variable numbers in trail order (C vars_in_trail)."""
-        return [entry.varnum for entry in self._entries]
+        return [varnum for varnum, _ in self._entries]
 
     def __len__(self) -> int:
-        return len(self._entries)
+        return self._size
 
 
 # ── Dereference ───────────────────────────────────────────────────────────────

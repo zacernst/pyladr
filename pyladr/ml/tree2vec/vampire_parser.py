@@ -104,17 +104,19 @@ def parse_vampire_text(text: str) -> VampireCorpus:
     sos_clauses = tuple(parsed.sos + parsed.usable)
     goal_clauses = tuple(parsed.goals)
 
-    # Extract all top-level atom terms and all subterms
+    # Extract all top-level atom terms and all subterms.
+    # Use Term as dict key (frozen dataclass with structural __hash__/__eq__)
+    # rather than id(subterm): id() returns a memory address that CPython
+    # reuses after GC, causing different subterms to falsely collide.
     all_terms: list[Term] = []
-    seen_subterms: dict[int, Term] = {}  # id -> Term for dedup
+    seen_subterms: dict[Term, Term] = {}  # Term -> Term for structural dedup
 
     for clause in sos_clauses + goal_clauses:
         for lit in clause.literals:
             all_terms.append(lit.atom)
             for subterm in lit.atom.subterms():
-                key = id(subterm)
-                if key not in seen_subterms:
-                    seen_subterms[key] = subterm
+                if subterm not in seen_subterms:
+                    seen_subterms[subterm] = subterm
 
     logger.info(
         "Parsed vampire corpus: %d SOS clauses, %d goal clauses, "

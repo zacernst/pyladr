@@ -1,3 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+
+# Testing / coverage
+.coverage
+.hypothesis/
+htmlcov/
+.pytest_cache/
+
+# ML artifacts
+*.pt
+*.pth
+*_summary.json
+*.t2v.json
+single_axiom_model/
+
+# Generated output
+*.out
+*.bak
+output.txt
+*.txt
+!requirements*.txt
+
+# Scratch / dev scripts
+scripts/
+foo
+tmp
+out
+goals
+hints
+:q
+vampire_map.in
+
+# Generated visualizations and data
+*.png
+*.html
+*_embeddings.json
+
+# Platform artifacts
+.DS_Store
+*.so
+*.dylib
+
+# External reference code
+reference-prover9/
+
+# C++ build output (created by build_cpp.sh / cmake)
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# C build artifacts
 *.o
 *.a
 bin/autosketches4

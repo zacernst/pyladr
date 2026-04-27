@@ -41,6 +41,10 @@ CONS_CHAR = ":"  # list cons, as in [x:y]
 
 _PUNCTUATION = frozenset(",()" + "[]" + "{}" + END_CHAR)
 
+# Single-character special tokens that do NOT aggregate with adjacent special chars.
+# The apostrophe/prime must be solo so that x'' → two separate ' tokens (not one '' token).
+_SOLO_SPECIAL = frozenset("'")
+
 _SPECIAL = frozenset(
     "+-*/\\^<>=`~?@&|:!#%'\".;"
 )
@@ -116,8 +120,14 @@ def tokenize(source: str) -> list[Token]:
 
         elif is_special_char(c):
             start = i
-            while i < n and is_special_char(source[i]):
+            if c in _SOLO_SPECIAL:
+                # Solo special chars emit a single-char token (do not aggregate).
+                # This ensures x'' → two separate ' tokens, not one '' token.
                 i += 1
+            else:
+                i += 1
+                while i < n and is_special_char(source[i]) and source[i] not in _SOLO_SPECIAL:
+                    i += 1
             tokens.append(
                 Token(type=TokenType.SPECIAL, value=source[start:i], pos=start)
             )

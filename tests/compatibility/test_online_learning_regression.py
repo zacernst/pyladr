@@ -195,7 +195,7 @@ class TestOnlineLearningComponentRegression:
         """All expected OutcomeType values exist."""
         from pyladr.ml.online_learning import OutcomeType
 
-        expected = {"KEPT", "SUBSUMED", "TAUTOLOGY", "WEIGHT_LIMIT", "PROOF"}
+        expected = {"KEPT", "SUBSUMED", "TAUTOLOGY", "WEIGHT_LIMIT", "PROOF", "SUBSUMER"}
         actual = {ot.name for ot in OutcomeType}
         assert expected == actual
 
@@ -319,9 +319,9 @@ class TestMLSelectionRegression:
         for c in clauses:
             sos.append(c)
 
-        # Weight-based should pick lightest
+        # First pick at index 0 is age-based (A rule), picks first inserted clause
         c, name = sel.select_given(sos, 0)
         assert c is not None
-        assert c.weight == 1.0
+        assert c.weight == 5.0  # first clause by age
         # Name should be traditional (not ML-enhanced)
         assert "+ML" not in name

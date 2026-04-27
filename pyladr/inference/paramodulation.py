@@ -60,32 +60,45 @@ def neg_eq(lit: Literal, symbol_table: SymbolTable) -> bool:
 
 # ── Equation orientation ──────────────────────────────────────────────────────
 
-# Orientation flags stored as attributes on clauses.
-# We use a module-level set to track oriented and renamable-flip atoms
-# since our Term objects are frozen.
+# Orientation flags stored as module-level sets of Term objects.
+# We store the atoms by structural value (not id) because:
+# 1. Term is frozen with __hash__/__eq__ based on content — safe for set membership
+# 2. Using id(atom) would cause spurious hits after GC recycles memory addresses
+#    (Python reuses the same address for a new object, so id(new_atom) == id(old_atom))
 
-_oriented_eqs: set[int] = set()  # id(atom) of oriented equalities
-_renamable_flips: set[int] = set()  # id(atom) of renamable-flip equalities
+_oriented_eqs: set[Term] = set()  # oriented equality atoms (LHS > RHS)
+_renamable_flips: set[Term] = set()  # renamable-flip equality atoms
+
+
+def reset_orientation_state() -> None:
+    """Clear all orientation tracking state between proof searches.
+
+    Module-level sets accumulate across searches if not cleared.
+    Call this at the start of each GivenClauseSearch.run() to prevent
+    stale orientation marks from affecting unrelated problems.
+    """
+    _oriented_eqs.clear()
+    _renamable_flips.clear()
 
 
 def mark_oriented_eq(atom: Term) -> None:
     """Mark an equality atom as oriented (left > right)."""
-    _oriented_eqs.add(id(atom))
+    _oriented_eqs.add(atom)
 
 
 def is_oriented_eq(atom: Term) -> bool:
     """Check if an equality atom is oriented."""
-    return id(atom) in _oriented_eqs
+    return atom in _oriented_eqs
 
 
 def mark_renamable_flip(atom: Term) -> None:
     """Mark an equality as a renamable flip (symmetric under renaming)."""
-    _renamable_flips.add(id(atom))
+    _renamable_flips.add(atom)
 
 
 def is_renamable_flip(atom: Term) -> bool:
     """Check if an equality is a renamable flip."""
-    return id(atom) in _renamable_flips
+    return atom in _renamable_flips
 
 
 def flip_eq(atom: Term) -> Term:

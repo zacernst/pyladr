@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 import torch
 from torch_geometric.data import HeteroData
 
+from pyladr.inference.paramodulation import is_eq_atom
+
 if TYPE_CHECKING:
     from pyladr.core.clause import Clause, Literal
     from pyladr.core.symbol import SymbolTable
@@ -297,10 +299,15 @@ class _GraphBuilder:
 
         Features: [sign, position, is_eq_literal]
         """
+        is_eq = (
+            is_eq_atom(literal.atom, self.symbol_table)
+            if self.symbol_table is not None
+            else literal.is_eq_literal
+        )
         return [
             float(literal.sign),
             float(position),
-            float(literal.is_eq_literal),
+            float(is_eq),
         ]
 
     def _term_features(
