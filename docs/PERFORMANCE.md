@@ -10,6 +10,7 @@ representative benchmark problems (April 2026):
 | Problem type | given/sec | generated/sec | Notes |
 |-------------|-----------|---------------|-------|
 | Equational (para+demod+back_demod) | 6–9 | 600–1,100 | Ring commutativity, lattice problems |
+| Single-predicate equational | ~16 | — | vampire.in with back-subsumption weight filter + Context/Trail reuse |
 | Resolution + hyperresolution | 4–6 | 1,000–1,400 | Condensed detachment (Luka20) |
 
 The given/sec rate is the primary throughput metric — it reflects selection,
