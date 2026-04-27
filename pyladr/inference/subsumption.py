@@ -422,6 +422,10 @@ def back_subsume_indexed(
     Finds candidates via hash-based lookup, then verifies with subsumes().
     Much faster than linear scanning when there are many clauses.
 
+    For unit subsumers (the common case), inlines the matching loop and
+    reuses a single Context/Trail pair across all candidates to avoid
+    per-call allocation overhead.
+
     Args:
         c: The new clause (potential subsumer).
         back_idx: Index of existing clauses.
@@ -435,10 +439,30 @@ def back_subsume_indexed(
         return []
 
     candidates = back_idx.candidates(c)
-    subsumees: list[Clause] = []
+    if not candidates:
+        return []
 
+    # Unit subsumer fast path: reuse Context/Trail across all candidates
+    if nc == 1:
+        clit = c.literals[0]
+        csign = clit.sign
+        catom = clit.atom
+        subst = Context()
+        trail = Trail()
+        subsumees: list[Clause] = []
+        for d in candidates:
+            for dlit in d.literals:
+                if csign == dlit.sign:
+                    if match(catom, subst, dlit.atom, trail):
+                        subsumees.append(d)
+                        trail.undo()
+                        break
+                    trail.undo_to(0)
+        return subsumees
+
+    # Non-unit: delegate to full subsumes()
+    subsumees = []
     for d in candidates:
         if subsumes(c, d, stats):
             subsumees.append(d)
-
     return subsumees
