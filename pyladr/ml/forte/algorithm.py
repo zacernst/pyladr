@@ -220,6 +220,7 @@ class ForteAlgorithm:
         num_pos = 0
         is_ground = True
         has_equality = False
+        num_eq_lits = 0
         total_sym_count = 0
         num_vars_total = 0
         num_constants = 0
@@ -246,6 +247,7 @@ class ForteAlgorithm:
 
             if atom_ps < 0 and atom_arity == 2:
                 has_equality = True
+                num_eq_lits += 1
 
             atom_sc = atom._symbol_count
             total_sym_count += atom_sc
@@ -326,7 +328,7 @@ class ForteAlgorithm:
         # [3]  is_unit             [4]  is_horn              [5]  is_ground
         # [6]  clause_weight       [7]  max_depth            [8]  total_symbols
         # [9]  total_variables     [10] num_constants        [11] num_complex_terms
-        # [12] max_depth (dup)     [13] max_arity            [14] avg_literal_size
+        # [12] num_eq_lits         [13] max_arity            [14] avg_literal_size
         # [15] variable_ratio      [16] distinct_symbols     [17] distinct_variables
         # [18] max_variable_index  [19] has_equality         [20] shared_variables
         # [21] literal_size_var    [22] positive_ratio       [23] ground_literal_ratio
@@ -342,7 +344,7 @@ class ForteAlgorithm:
         features[9] = float(num_vars_total)
         features[10] = float(num_constants)
         features[11] = float(num_complex)
-        features[12] = float(max_depth)
+        features[12] = float(num_eq_lits)  # count of equational (binary predicate) literals
         features[13] = float(max_arity)
         features[14] = avg_size
         features[15] = float(num_vars_total) / total_nodes if total_nodes > 0 else 0.0
