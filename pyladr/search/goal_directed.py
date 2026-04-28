@@ -118,9 +118,9 @@ class GoalDistanceScorer:
 
     With no goals, returns 0.5 (neutral).
 
-    Goals are typically DENY-justified (negated-conjecture) clauses.
-    A large distance from the DENY reference means the clause is close
-    to the actual (un-negated) goal, making it promising for proof search.
+    Goals are typically DENY-justified (negated-conjecture) clauses,
+    deskolemized so that small distance = structurally similar to the
+    goal = proof-useful.
     """
 
     __slots__ = ("_goal_embeddings", "_lock")
@@ -208,10 +208,10 @@ class GoalDirectedEmbeddingProvider:
     """Wraps an EmbeddingProvider with goal-directed distance-based enhancement.
 
     When enabled and goals are registered:
-    - Embeddings are scaled by goal distance: clauses far from the
-      DENY-justified reference (i.e. close to the actual goal) get
-      smaller norms, which the proof_potential_score interprets as
-      more promising (via inverse sigmoid on norm).
+    - Embeddings are scaled by goal distance: clauses CLOSE to the
+      deskolemized goal reference get smaller norms, which the
+      proof_potential_score interprets as more promising (via inverse
+      sigmoid on norm).  Lower norm → higher score → more likely selected.
     - Goal distance information flows through the existing ML scoring
       pipeline without any changes to ml_selection.py.
 

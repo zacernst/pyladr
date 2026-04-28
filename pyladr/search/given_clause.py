@@ -421,9 +421,13 @@ class GivenClauseSearch:
                 )
                 from pyladr.ml.rnn2vec.algorithm import RNN2VecConfig
                 from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
+                from pyladr.ml.tree2vec.walks import WalkConfig
 
                 r2v_cfg = RNN2VecProviderConfig(
                     rnn2vec_config=RNN2VecConfig(
+                        walk_config=WalkConfig(
+                            max_walk_length=opts.rnn2vec_max_walk_length,
+                        ),
                         rnn_config=RNNEmbeddingConfig(
                             rnn_type=opts.rnn2vec_rnn_type,
                             hidden_dim=opts.rnn2vec_hidden_dim,
@@ -840,8 +844,9 @@ class GivenClauseSearch:
             )
 
             # Use DENY-justified SOS clauses as the proximity reference.
-            # These provide natural sign contrast (negative literals) against
-            # the positive derived clauses, giving a wide, useful proximity range.
+            # Goal clauses are deskolemized (signs forced positive, constants
+            # replaced by variables) before embedding, so the proximity
+            # comparison is against structural shape only.
             all_initial = [*(usable or []), *(sos or [])]
             self._t2v_goal_clauses = [
                 c for c in all_initial
@@ -970,7 +975,12 @@ class GivenClauseSearch:
                     )
                     if self._opts.rnn2vec_dump_embeddings:
                         self._dump_r2v_embeddings(0)
-            except Exception:
+            except Exception as _r2v_exc:
+                import traceback as _tb
+                print(
+                    f"% RNN2Vec init error: {type(_r2v_exc).__name__}: {_r2v_exc}\n"
+                    f"% {''.join(_tb.format_exc()).strip()}",
+                )
                 logger.warning(
                     "Failed to initialize RNN2Vec provider, continuing without",
                     exc_info=True,
@@ -1003,11 +1013,19 @@ class GivenClauseSearch:
                 )
 
         # Goal-proximity wrapping for RNN2Vec
+        wants_goals = (
+            self._opts.rnn2vec_goal_proximity or self._opts.rnn2vec_random_goal_weight > 0
+        )
         need_goals = (
-            (self._opts.rnn2vec_goal_proximity or self._opts.rnn2vec_random_goal_weight > 0)
+            wants_goals
             and self._rnn2vec_provider is not None
             and callable(getattr(self._rnn2vec_provider, 'get_embedding', None))
         )
+        if wants_goals and not need_goals:
+            print(
+                "% RNN2Vec: goal proximity requested but provider not ready "
+                f"(provider={str(self._rnn2vec_provider)[:80]})"
+            )
         if need_goals:
             from pyladr.search.goal_directed import (
                 GoalDirectedConfig,
@@ -1022,6 +1040,13 @@ class GivenClauseSearch:
                     and c.justification[0].just_type == JustType.DENY)
             ]
             self._r2v_goal_clauses = r2v_goal_clauses
+
+            if not r2v_goal_clauses:
+                print(
+                    f"% RNN2Vec: no DENY-justified goal clauses found in "
+                    f"{len(all_initial)} initial clauses; "
+                    f"goal proximity disabled."
+                )
 
             if r2v_goal_clauses:
                 gd_config = GoalDirectedConfig(

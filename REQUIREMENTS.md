@@ -91,6 +91,27 @@ ML enhancements must not modify the core search loop, clause data structures, or
 
 - **Status:** PASS
 
+### REQ-ML-RGP-001: RGP Selection Direction
+
+RGP (Random Goal Proximity) selection must use argmin cosine distance to goal embeddings — lower distance = higher selection priority. Verified correct as of 2026-04-27 audit.
+
+- **Status:** PASS
+- **Acceptance:** `GoalDistanceScorer.nearest_goal_distance` returns lower values for goal-similar clauses; selection uses argmin
+
+### REQ-ML-RGP-002: RGP Goal Embedding Normalization
+
+Goal embeddings for RGP must be computed from deskolemized (signs forced True, constants→variables) versions of DENY-justified clauses, so comparison captures structural shape not specific constant identities.
+
+- **Status:** PASS
+- **Acceptance:** `_deskolemize_clause` forces signs positive and replaces all constants with variables before embedding
+
+### REQ-ML-ENHANCE-001: Embedding Enhancement Scale Invariant
+
+`GoalDirectedEmbeddingProvider._enhance_embedding` scale invariant: scale(d=0.0) = 1-weight (smallest), scale(d=1.0) = 1.0 (largest). Clauses close to the deskolemized goal get the smallest scale factor (and thus smallest norm), which `proof_potential_score` interprets as most promising.
+
+- **Status:** PASS
+- **Acceptance:** `_enhance_embedding` uses `scale = 1.0 - weight * (1.0 - distance)`, verified by unit tests
+
 ---
 
 ## 3. Quality and Testing (REQ-Q)
@@ -127,6 +148,13 @@ Memory usage must remain bounded during search. SOS displacement and clause dele
 
 - **Status:** PENDING
 - **Acceptance:** Peak RSS does not exceed 2x initial allocation on problems with >10,000 kept clauses
+
+### REQ-PERF-BACKSUB-001: Back-Subsumption Throughput Baseline
+
+Back-subsumption throughput baseline post-optimization: ≥12 given/sec on single-predicate equational problems (measured 16 given/sec on vampire.in with weight filter + Context/Trail reuse, April 2026).
+
+- **Status:** PASS
+- **Acceptance:** Measured throughput on `vampire.in` ≥12 given/sec with optimized back-subsumption path
 
 ---
 
@@ -204,9 +232,9 @@ PyLADR must be invocable as a subprocess with correct exit codes for scripting a
 | Category | Total | PASS | PENDING |
 |----------|-------|------|---------|
 | Compatibility (REQ-C) | 7 | 7 | 0 |
-| ML Architecture (REQ-ML) | 3 | 3 | 0 |
+| ML Architecture (REQ-ML) | 6 | 6 | 0 |
 | Quality (REQ-Q) | 2 | 2 | 0 |
-| Performance (REQ-P) | 2 | 1 | 1 |
+| Performance (REQ-P) | 3 | 2 | 1 |
 | Regression (REQ-R) | 7 | 7 | 0 |
 | Integration (REQ-I) | 2 | 2 | 0 |
-| **Total** | **23** | **22** | **1** |
+| **Total** | **27** | **26** | **1** |
