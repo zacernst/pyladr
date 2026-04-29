@@ -19,8 +19,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tests.conftest import C_PROVER9_BIN, ConfigurationError, require_c_binary
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-C_PROVER9_BIN = PROJECT_ROOT / "bin" / "prover9"
 INPUTS_DIR = PROJECT_ROOT / "tests" / "fixtures" / "inputs"
 RESULTS_DIR = PROJECT_ROOT / "tests" / "benchmarks" / "results"
 
@@ -104,12 +105,7 @@ def run_c_benchmark(input_file: Path, *, runs: int = 3) -> BenchmarkResult:
 
     Runs the problem multiple times and takes the median CPU time.
     """
-    if not C_PROVER9_BIN.exists():
-        return BenchmarkResult(
-            problem=input_file.stem,
-            implementation="c",
-            error=f"C binary not found at {C_PROVER9_BIN}",
-        )
+    require_c_binary()
 
     cpu_times: list[float] = []
     wall_times: list[float] = []
