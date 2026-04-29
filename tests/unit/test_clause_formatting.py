@@ -1,62 +1,12 @@
-"""Unit tests for pyladr.search.clause_formatting — formatting and entropy."""
+"""Unit tests for pyladr.search.clause_formatting."""
 
 from __future__ import annotations
-
-import math
 
 from pyladr.core.clause import Clause, Literal
 from pyladr.core.symbol import SymbolTable
 from pyladr.core.term import get_rigid_term, get_variable_term
 from pyladr.parsing.ladr_parser import parse_clause
-from pyladr.search.clause_formatting import (
-    calculate_structural_entropy,
-    format_clause_std,
-)
-
-
-# ── calculate_structural_entropy tests ───────────────────────────────────────
-
-
-class TestStructuralEntropy:
-    def test_ground_clause_nonnegative(self):
-        """Ground clause P(a) gives non-negative finite entropy."""
-        table = SymbolTable()
-        c = parse_clause("P(a).", table)
-        h = calculate_structural_entropy(c)
-        assert h >= 0.0
-        assert math.isfinite(h)
-
-    def test_simple_atom_entropy_value(self):
-        """P(a) has nodes: clause=1, literal=1, predicate=1, constant=1.
-        Total=4, each p=0.25, H = -4*(0.25*log2(0.25)) = 2.0."""
-        table = SymbolTable()
-        c = parse_clause("P(a).", table)
-        h = calculate_structural_entropy(c)
-        assert abs(h - 2.0) < 1e-9
-
-    def test_empty_clause_zero_entropy(self):
-        """Empty clause ($F) has only 1 node → entropy 0."""
-        c = Clause(literals=(), id=1)
-        assert calculate_structural_entropy(c) == 0.0
-
-    def test_variable_clause_does_not_crash(self):
-        """Clause with variables computes without error."""
-        table = SymbolTable()
-        c = parse_clause("P(x).", table)
-        h = calculate_structural_entropy(c)
-        assert h >= 0.0
-        assert math.isfinite(h)
-
-    def test_complex_clause_higher_entropy(self):
-        """More diverse node types → higher entropy than a simple clause."""
-        table = SymbolTable()
-        simple = parse_clause("P(a).", table)
-        # P(f(x), a) has: clause, literal, predicate, function, variable, constant
-        complex_c = parse_clause("P(f(x), a).", table)
-        h_simple = calculate_structural_entropy(simple)
-        h_complex = calculate_structural_entropy(complex_c)
-        # Complex has all 6 node types populated → higher entropy
-        assert h_complex > h_simple
+from pyladr.search.clause_formatting import format_clause_std
 
 
 # ── format_clause_std tests ──────────────────────────────────────────────────

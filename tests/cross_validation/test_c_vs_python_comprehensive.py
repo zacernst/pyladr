@@ -78,7 +78,7 @@ def _run_python_on_text(
 
     Returns (ProverResult-compatible, raw SearchResult).
     """
-    from pyladr.apps.prover9 import _apply_settings, _auto_cascade, _deny_goals
+    from pyladr.apps.prover9 import _apply_settings, _auto_inference, _auto_limits, _deny_goals
     from pyladr.core.symbol import SymbolTable
     from pyladr.parsing.ladr_parser import LADRParser
     from pyladr.search.given_clause import ExitCode, GivenClauseSearch, SearchOptions
@@ -102,9 +102,12 @@ def _run_python_on_text(
     _apply_settings(parsed, opts, st)
 
     # Match C Prover9 default: always run auto-cascade unless explicitly
-    # disabled in the input. C defaults to set(auto).
-    if auto and not parsed.settings.flag("auto"):
-        _auto_cascade(parsed, opts, st)
+    # disabled in the input. C defaults to set(auto), which enables both
+    # auto_inference and auto_limits; apply both directly here to match
+    # the behavior of the now-split _auto_cascade.
+    if auto and not parsed.flags.get("auto", False):
+        _auto_inference(parsed, opts)
+        _auto_limits(parsed, opts)
 
     search = GivenClauseSearch(options=opts, symbol_table=st)
     result = search.run(usable=usable, sos=sos)

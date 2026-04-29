@@ -12,9 +12,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Locate the C binary relative to the project root
+from tests.conftest import C_PROVER9_BIN, ConfigurationError, require_c_binary
+
+# Re-export for backwards compatibility with tests that import from c_runner.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-C_PROVER9_BIN = PROJECT_ROOT / "bin" / "prover9"
+__all__ = [
+    "C_PROVER9_BIN",
+    "ConfigurationError",
+    "ProverResult",
+    "extract_proof_ids",
+    "extract_proof_justifications",
+    "run_c_prover9",
+    "run_c_prover9_from_string",
+]
 
 
 @dataclass
@@ -58,14 +68,10 @@ def run_c_prover9(
         ProverResult with parsed output fields.
 
     Raises:
-        FileNotFoundError: If the C binary is not found.
+        ConfigurationError: If the C binary is missing or not executable.
         subprocess.TimeoutExpired: If the prover exceeds the timeout.
     """
-    if not C_PROVER9_BIN.exists():
-        raise FileNotFoundError(
-            f"C Prover9 binary not found at {C_PROVER9_BIN}. "
-            "Run 'make all' from the project root to build it."
-        )
+    require_c_binary()
 
     cmd = [str(C_PROVER9_BIN), "-f", str(input_file)]
     if extra_args:
@@ -94,12 +100,11 @@ def run_c_prover9_from_string(
 
     Returns:
         ProverResult with parsed output fields.
+
+    Raises:
+        ConfigurationError: If the C binary is missing or not executable.
     """
-    if not C_PROVER9_BIN.exists():
-        raise FileNotFoundError(
-            f"C Prover9 binary not found at {C_PROVER9_BIN}. "
-            "Run 'make all' from the project root to build it."
-        )
+    require_c_binary()
 
     proc = subprocess.run(
         [str(C_PROVER9_BIN)],

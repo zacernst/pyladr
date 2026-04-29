@@ -42,26 +42,14 @@ KNOWN_VIOLATIONS_ML_TO_SEARCH = {
     # Remaining: concrete class dependencies that require deeper refactoring.
     # contrastive.py TYPE_CHECKING import of Proof/SearchResult
     ("pyladr.ml.training.contrastive", "pyladr.search.given_clause"),
-    # FORTE imports proof_pattern_memory from search — planned for extraction to protocols
-    ("pyladr.ml.forte.__init__", "pyladr.search.proof_pattern_memory"),
-    ("pyladr.ml.forte.proof_patterns", "pyladr.search.proof_pattern_memory"),
 }
 
 KNOWN_VIOLATIONS_SEARCH_TO_ML = {
     # online_integration.py deeply couples search↔ml — remaining violations
     ("pyladr.search.online_integration", "pyladr.ml.online_learning"),
     ("pyladr.search.online_integration", "pyladr.ml.embedding_provider"),
-    # given_clause.py lazy-imports FORTE, Tree2Vec, RNN2Vec inside init methods.
+    # given_clause.py lazy-imports RNN2Vec inside init methods.
     # These will be routed through EmbeddingManager → protocols in a future refactor.
-    ("pyladr.search.given_clause", "pyladr.ml.forte.provider"),
-    ("pyladr.search.given_clause", "pyladr.ml.forte.algorithm"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.provider"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.algorithm"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.skipgram"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.walks"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.formula_processor"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.vampire_parser"),
-    ("pyladr.search.given_clause", "pyladr.ml.tree2vec.background_updater"),
     ("pyladr.search.given_clause", "pyladr.ml.rnn2vec.provider"),
     ("pyladr.search.given_clause", "pyladr.ml.rnn2vec.algorithm"),
     ("pyladr.search.given_clause", "pyladr.ml.rnn2vec.encoder"),
@@ -212,13 +200,13 @@ class TestImportGraphIsolation:
         Update this count as violations are resolved. The goal is zero.
         """
         total_known = len(KNOWN_VIOLATIONS_ML_TO_SEARCH) + len(KNOWN_VIOLATIONS_SEARCH_TO_ML)
-        # Phase 1 baseline: 19 known violations (documented as of April 2026)
-        # - 3 ML→Search: forte imports proof_pattern_memory + contrastive TYPE_CHECKING
-        # - 16 Search→ML: given_clause.py lazy-imports FORTE, Tree2Vec, RNN2Vec providers
-        #   and online_integration.py couples to online_learning + embedding_provider
+        # Post-FORTE/tree2vec-deletion baseline: 8 known violations (April 2026).
+        # - 1 ML→Search: contrastive.py TYPE_CHECKING import of Proof/SearchResult.
+        # - 7 Search→ML: given_clause.py lazy-imports RNN2Vec subsystem + online_integration.py
+        #   couples to online_learning + embedding_provider.
         # Reduce this limit as violations are eliminated via EmbeddingManager extraction.
         # Goal: 0 when all concrete dependencies are routed through protocols package.
-        assert total_known <= 19, (
+        assert total_known <= 8, (
             f"Known violations increased to {total_known} — "
             "protocol isolation should be reducing this number"
         )
@@ -530,9 +518,10 @@ class TestConfigurationBounds:
         """SearchOptions.__post_init__ must call validate_search_options."""
         from pyladr.search.given_clause import SearchOptions
 
-        # Constructing with invalid params must raise immediately
-        with pytest.raises(ValueError):
-            SearchOptions(entropy_weight=-1)
+        # Constructing with an out-of-bounds field must raise immediately.
+        # hint_wt has a lower bound of 0.0 in _NUMERIC_BOUNDS.
+        with pytest.raises(ValueError, match="hint_wt"):
+            SearchOptions(hint_wt=-1)
 
     def test_semantic_validation_detects_misconfiguration(self) -> None:
         """Semantic validation catches logically inconsistent configs."""

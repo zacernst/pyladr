@@ -10,11 +10,44 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-C_PROVER9_BIN = PROJECT_ROOT / "bin" / "prover9"
+C_PROVER9_BIN = PROJECT_ROOT / "reference-prover9" / "bin" / "prover9"
 C_EXAMPLES_DIR = PROJECT_ROOT / "prover9.examples"
 TEST_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 TEST_INPUTS_DIR = TEST_FIXTURES_DIR / "inputs"
 C_REFERENCE_DIR = TEST_FIXTURES_DIR / "c_reference"
+
+
+class ConfigurationError(RuntimeError):
+    """Raised when test infrastructure is misconfigured.
+
+    Distinct from test failure: signals a setup/env bug that must be fixed,
+    not a test assertion that didn't hold. Cycle 5 hid 175 cross-validation
+    tests because a wrong path resolved to skipif(True) — loud-fail prevents
+    that class of silent regression.
+    """
+
+
+def require_c_binary(bin_path: Path | None = None) -> Path:
+    """Return the C Prover9 binary path, raising ConfigurationError if missing.
+
+    Preferred over silent skip at call sites that genuinely need the binary.
+    For legitimate opt-out on machines without the binary, set the env var
+    PYLADR_ALLOW_MISSING_C_BINARY=1 before running pytest.
+    """
+    path = bin_path or C_PROVER9_BIN
+    if not path.exists():
+        raise ConfigurationError(
+            f"C Prover9 binary not found at {path}. "
+            f"Expected location: reference-prover9/bin/prover9 "
+            f"(build with 'make all' from reference-prover9/). "
+            f"Set PYLADR_ALLOW_MISSING_C_BINARY=1 to opt out (dev only)."
+        )
+    if not os.access(path, os.X_OK):
+        raise ConfigurationError(
+            f"C Prover9 binary at {path} is not executable. "
+            f"Check permissions (chmod +x)."
+        )
+    return path
 
 
 @pytest.fixture
@@ -110,7 +143,7 @@ end_of_list.
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers."""
+    """Register custom markers and validate test infrastructure."""
     config.addinivalue_line("markers", "slow: marks tests as slow")
     config.addinivalue_line(
         "markers", "cross_validation: tests that compare Python vs C"
@@ -120,3 +153,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "requires_models: tests that need core data models"
     )
+
+    # §4.4 loud-fail infra guard (cycle 6): abort session loudly if the C
+    # reference binary is missing rather than silently skipping tests.
+    if os.environ.get("PYLADR_ALLOW_MISSING_C_BINARY") != "1":
+        require_c_binary()

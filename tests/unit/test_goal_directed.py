@@ -18,6 +18,7 @@ from pyladr.search.goal_directed import (
     GoalDirectedConfig,
     GoalDirectedEmbeddingProvider,
     GoalDistanceScorer,
+    ReferencePoint,
     _deskolemize_clause,
 )
 
@@ -293,7 +294,14 @@ class TestEnhanceEmbeddingDirection:
         )
 
     def test_opposite_clause_has_largest_norm(self) -> None:
-        """A clause opposite to the goal should have the largest norm."""
+        """A clause opposite to the goal should have the largest norm.
+
+        With ancestor-aware distance (min over goals ∪ ancestors and a 0.5
+        neutral default when no ancestors have been recorded), distances above
+        0.5 clip to 0.5 — so a clause *opposite* to the goal is treated the
+        same as an orthogonal clause. The essential invariant is that both
+        are strictly worse than a goal-close clause.
+        """
         goal_emb = [1.0, 0.0, 0.0]
 
         provider = PerClauseProvider(
@@ -318,9 +326,11 @@ class TestEnhanceEmbeddingDirection:
         norm_ortho = _norm(emb_ortho)
         norm_opp = _norm(emb_opp)
 
-        assert norm_close < norm_ortho < norm_opp, (
-            f"Expected norm_close ({norm_close:.4f}) < norm_ortho ({norm_ortho:.4f}) "
-            f"< norm_opposite ({norm_opp:.4f})"
+        assert norm_close < norm_ortho, (
+            f"Expected norm_close ({norm_close:.4f}) < norm_ortho ({norm_ortho:.4f})"
+        )
+        assert norm_close < norm_opp, (
+            f"Expected norm_close ({norm_close:.4f}) < norm_opposite ({norm_opp:.4f})"
         )
 
     def test_disabled_is_passthrough(self) -> None:
@@ -353,3 +363,450 @@ class TestEnhanceEmbeddingDirection:
         # With distance=0.5, scale = 1.0 - 0.3 * (1.0 - 0.5) = 0.85
         expected_scale = 1.0 - 0.3 * 0.5
         assert result[0] == pytest.approx(1.0 * expected_scale)
+
+
+# ── Productive-ancestor tracking tests ───────────────────────────────────────
+
+
+class TestAncestorProximity:
+    """Tests for the productive-ancestor tracking extension."""
+
+    def test_record_productive_ancestors_adds_embeddings(self) -> None:
+        """record_productive_ancestors stores parent embeddings via the base provider."""
+        provider = PerClauseProvider(
+            embeddings={10: [1.0, 0.0, 0.0], 20: [0.0, 1.0, 0.0]},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=True),
+        )
+        assert gdp.num_ancestors == 0
+
+        parents = [
+            Clause(literals=(), id=10),
+            Clause(literals=(), id=20),
+        ]
+        gdp.record_productive_ancestors(parents)
+
+        assert gdp.num_ancestors == 2
+
+    def test_record_productive_ancestors_disabled_is_noop(self) -> None:
+        """With ancestor_tracking=False, no ancestors are stored."""
+        provider = PerClauseProvider(
+            embeddings={10: [1.0, 0.0, 0.0]},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=False),
+        )
+        gdp.record_productive_ancestors([Clause(literals=(), id=10)])
+        assert gdp.num_ancestors == 0
+
+    def test_nearest_ancestor_distance_neutral_when_empty(self) -> None:
+        """With no references registered, _nearest_reference_distance returns 0.5."""
+        provider = MockBaseProvider(fixed_embedding=[1.0, 0.0, 0.0], dim=3)
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True),
+        )
+        assert gdp.num_ancestors == 0
+        # Any embedding should return the neutral value when the reference
+        # set (goals ∪ ancestors) is empty.
+        assert gdp._nearest_reference_distance([1.0, 0.0, 0.0]) == 0.5
+        assert gdp._nearest_reference_distance([0.0, 1.0, 0.0]) == 0.5
+        assert gdp._nearest_reference_distance([-1.0, 0.0, 0.0]) == 0.5
+
+    def test_nearest_ancestor_distance_uses_nearest(self) -> None:
+        """Distance should use the closest registered ancestor, weighted by
+        its depth-decay.  With default decay=0.8, a depth-1 ancestor whose
+        embedding matches the query gives weighted-sim=0.8 and so a distance
+        of (1 - 0.8) / 2 = 0.1 rather than 0.0."""
+        provider = PerClauseProvider(
+            embeddings={
+                10: [1.0, 0.0, 0.0],
+                20: [0.0, 1.0, 0.0],
+            },
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=True),
+        )
+        gdp.record_productive_ancestors([
+            Clause(literals=(), id=10),
+            Clause(literals=(), id=20),
+        ])
+
+        # A query identical to ancestor 10 (weight 0.8) → distance 0.1
+        assert gdp._nearest_reference_distance([1.0, 0.0, 0.0]) == pytest.approx(0.1)
+        # A query identical to ancestor 20 (weight 0.8) → distance 0.1
+        assert gdp._nearest_reference_distance([0.0, 1.0, 0.0]) == pytest.approx(0.1)
+
+    def test_enhance_uses_ancestor_distance(self) -> None:
+        """_enhance_embedding uses ancestor distance when ancestors are closer than goals.
+
+        Set a goal at direction A and an ancestor at direction B (orthogonal).
+        A clause whose embedding matches B should be enhanced (smaller norm)
+        because its nearest reference is the ancestor, not the far goal.
+        """
+        goal_emb = [1.0, 0.0, 0.0]
+        ancestor_emb = [0.0, 1.0, 0.0]
+
+        provider = PerClauseProvider(
+            embeddings={
+                # Ancestor clause
+                100: ancestor_emb,
+                # Query clauses: matches ancestor, matches goal, far from both
+                1: [0.0, 1.0, 0.0],     # identical to ancestor
+                2: [1.0, 0.0, 0.0],     # identical to goal
+                3: [0.0, 0.0, 1.0],     # orthogonal to both
+            },
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                goal_proximity_weight=0.5,
+                ancestor_tracking=True,
+            ),
+        )
+        gdp._goal_scorer.set_goals([goal_emb])
+        gdp.record_productive_ancestors([Clause(literals=(), id=100)])
+        assert gdp.num_ancestors == 1
+
+        emb_ancestor_close = gdp.get_embedding(Clause(literals=(), id=1))
+        emb_goal_close = gdp.get_embedding(Clause(literals=(), id=2))
+        emb_far = gdp.get_embedding(Clause(literals=(), id=3))
+
+        assert emb_ancestor_close is not None
+        assert emb_goal_close is not None
+        assert emb_far is not None
+
+        norm_ancestor = _norm(emb_ancestor_close)
+        norm_goal = _norm(emb_goal_close)
+        norm_far = _norm(emb_far)
+
+        # Both the ancestor-close and goal-close clauses are "close to some
+        # reference" and should be strictly more promising (smaller norm) than
+        # an orthogonal clause.
+        assert norm_ancestor < norm_far
+        assert norm_goal < norm_far
+
+    def test_clear_ancestors(self) -> None:
+        """clear_ancestors() empties the ancestor set."""
+        provider = PerClauseProvider(
+            embeddings={10: [1.0, 0.0, 0.0], 20: [0.0, 1.0, 0.0]},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=True),
+        )
+        gdp.record_productive_ancestors([
+            Clause(literals=(), id=10),
+            Clause(literals=(), id=20),
+        ])
+        assert gdp.num_ancestors == 2
+
+        gdp.clear_ancestors()
+        assert gdp.num_ancestors == 0
+
+    def test_ancestor_max_count(self) -> None:
+        """No more than ancestor_max_count ancestors are stored."""
+        embs = {i: [float(i), 0.0, 0.0] for i in range(1, 6)}
+        provider = PerClauseProvider(embeddings=embs, dim=3)
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_max_count=3,
+            ),
+        )
+        parents = [Clause(literals=(), id=i) for i in range(1, 6)]  # 5 parents
+        gdp.record_productive_ancestors(parents)
+        # Only the first 3 should have been stored
+        assert gdp.num_ancestors == 3
+
+        # Additional calls should not exceed the cap
+        gdp.record_productive_ancestors([Clause(literals=(), id=5)])
+        assert gdp.num_ancestors == 3
+
+    def test_stats_report_includes_ancestors(self) -> None:
+        """Stats dict contains num_ancestors; stats_report includes 'ancestors='."""
+        provider = PerClauseProvider(
+            embeddings={10: [1.0, 0.0, 0.0]},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=True),
+        )
+        stats = gdp.stats
+        assert "num_ancestors" in stats
+        assert stats["num_ancestors"] == 0
+
+        gdp.record_productive_ancestors([Clause(literals=(), id=10)])
+        stats = gdp.stats
+        assert stats["num_ancestors"] == 1
+
+        report = gdp.stats_report()
+        assert "ancestors=" in report
+        assert "ancestors=1" in report
+
+
+# ── Recursive ancestor expansion tests ───────────────────────────────────────
+
+
+class TestRecursiveAncestorExpansion:
+    """Tests for the recursive reference-set expansion via try_expand_from_clause.
+
+    The productive reference set is seeded with goals (depth 0, weight 1.0)
+    and grown by :meth:`try_expand_from_clause`: when a probe embedding is
+    close enough to a current reference point, the parents of that probe are
+    added as deeper reference points with exponentially-decaying weight.
+    """
+
+    def test_try_expand_from_clause_close_to_goal_adds_depth1(self) -> None:
+        """A probe embedding close to a goal triggers depth-1 parent insertion."""
+        parent_emb = [0.5, 0.5, 0.0]  # embedding of the parent clause
+        provider = PerClauseProvider(
+            embeddings={50: parent_emb},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+                ancestor_decay=0.8,
+            ),
+        )
+        # Register a goal so the reference set is non-empty.
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+
+        # Probe embedding is identical to the goal → distance = 0.0 < 0.3.
+        added = gdp.try_expand_from_clause(
+            [1.0, 0.0, 0.0], [Clause(literals=(), id=50)],
+        )
+        assert added is True
+        assert gdp.num_ancestors == 1
+
+        # The newly inserted reference should be at depth 1 with weight 0.8.
+        ref = gdp._ancestor_reference[0]
+        assert ref.depth == 1
+        assert ref.weight == pytest.approx(0.8)
+        assert ref.embedding == parent_emb
+
+    def test_try_expand_from_clause_far_from_all_adds_nothing(self) -> None:
+        """A probe too far from every reference triggers no expansion."""
+        provider = PerClauseProvider(
+            embeddings={50: [0.0, 0.0, 1.0]},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+            ),
+        )
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+
+        # Probe is opposite to the only goal → distance = 1.0 > 0.3.
+        added = gdp.try_expand_from_clause(
+            [-1.0, 0.0, 0.0], [Clause(literals=(), id=50)],
+        )
+        assert added is False
+        assert gdp.num_ancestors == 0
+
+    def test_try_expand_from_clause_close_to_ancestor_adds_depth2(self) -> None:
+        """A probe close to a depth-1 ancestor adds parents at depth 2."""
+        parent_emb = [0.1, 0.9, 0.0]
+        provider = PerClauseProvider(
+            embeddings={50: parent_emb},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+                ancestor_decay=0.8,
+                ancestor_max_depth=5,
+            ),
+        )
+        # Goal is orthogonal to the depth-1 ancestor so only the ancestor
+        # drives the expansion decision.
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+        # Pre-install a depth-1 ancestor at [0, 1, 0] with weight decay=0.8.
+        gdp._ancestor_reference.append(
+            ReferencePoint(embedding=[0.0, 1.0, 0.0], depth=1, weight=0.8),
+        )
+        assert gdp.num_ancestors == 1
+
+        # Probe identical to the depth-1 ancestor:
+        #   weighted-sim from goal    = 1.0 * 0.0 = 0.0
+        #   weighted-sim from ancestor = 0.8 * 1.0 = 0.8
+        #   distance = (1 - 0.8) / 2 = 0.1 < 0.3 → expand to depth 2.
+        added = gdp.try_expand_from_clause(
+            [0.0, 1.0, 0.0], [Clause(literals=(), id=50)],
+        )
+        assert added is True
+        assert gdp.num_ancestors == 2
+
+        new_ref = gdp._ancestor_reference[-1]
+        assert new_ref.depth == 2
+        assert new_ref.weight == pytest.approx(0.8 ** 2)
+        assert new_ref.embedding == parent_emb
+
+    def test_max_depth_stops_recursion(self) -> None:
+        """With ancestor_max_depth=1, depth-2 expansion is blocked even when
+        the probe is close to a depth-1 ancestor."""
+        provider = PerClauseProvider(
+            embeddings={50: [0.1, 0.9, 0.0]},
+            dim=3,
+        )
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+                ancestor_decay=0.8,
+                ancestor_max_depth=1,  # ← the boundary we're testing
+            ),
+        )
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+        gdp._ancestor_reference.append(
+            ReferencePoint(embedding=[0.0, 1.0, 0.0], depth=1, weight=0.8),
+        )
+        assert gdp.num_ancestors == 1
+
+        # The probe would otherwise trigger a depth-2 insertion, but
+        # new_depth (2) > ancestor_max_depth (1) → blocked.
+        added = gdp.try_expand_from_clause(
+            [0.0, 1.0, 0.0], [Clause(literals=(), id=50)],
+        )
+        assert added is False
+        assert gdp.num_ancestors == 1  # unchanged
+
+    def test_min_weight_stops_recursion(self) -> None:
+        """ancestor_min_weight halts recursion when decay**depth falls below it."""
+        provider = PerClauseProvider(
+            embeddings={50: [0.1, 0.9, 0.0]},
+            dim=3,
+        )
+        # decay=0.5, min_weight=0.4:
+        #   depth-1 weight = 0.5 ≥ 0.4 → allowed
+        #   depth-2 weight = 0.25 < 0.4 → blocked
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+                ancestor_decay=0.5,
+                ancestor_min_weight=0.4,
+                ancestor_max_depth=5,  # not the limiting factor
+            ),
+        )
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+        # Pre-install a depth-1 ancestor with the matching weight=0.5.
+        gdp._ancestor_reference.append(
+            ReferencePoint(embedding=[0.0, 1.0, 0.0], depth=1, weight=0.5),
+        )
+        assert gdp.num_ancestors == 1
+
+        # Probe close to the depth-1 ancestor:
+        #   weighted-sim from ancestor = 0.5 * 1.0 = 0.5
+        #   distance = 0.25 < 0.3 → passes the threshold
+        #   new_depth = 2, new_weight = 0.25 < min_weight=0.4 → blocked.
+        added = gdp.try_expand_from_clause(
+            [0.0, 1.0, 0.0], [Clause(literals=(), id=50)],
+        )
+        assert added is False
+        assert gdp.num_ancestors == 1  # recursion stopped by min_weight
+
+        # Boundary: depth-1 expansion from a goal is still allowed because
+        # new_weight = 0.5 ≥ 0.4.
+        parent_emb = [0.9, 0.1, 0.0]
+        provider2 = PerClauseProvider(
+            embeddings={60: parent_emb}, dim=3,
+        )
+        gdp2 = GoalDirectedEmbeddingProvider(
+            base_provider=provider2,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+                ancestor_decay=0.5,
+                ancestor_min_weight=0.4,
+            ),
+        )
+        gdp2._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+        added2 = gdp2.try_expand_from_clause(
+            [1.0, 0.0, 0.0], [Clause(literals=(), id=60)],
+        )
+        assert added2 is True
+        assert gdp2.num_ancestors == 1
+
+    def test_nearest_reference_distance_weighted(self) -> None:
+        """_nearest_reference_distance uses the weighted-similarity formula
+        (1 - max_i w_i * cos(e, r_i)) / 2, with goals at weight 1.0 and
+        ancestors at their stored weights."""
+        provider = MockBaseProvider(fixed_embedding=[1.0, 0.0, 0.0], dim=3)
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=True),
+        )
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])  # G
+        gdp._ancestor_reference.append(
+            ReferencePoint(embedding=[0.0, 1.0, 0.0], depth=1, weight=0.8),
+        )
+
+        # Identical to goal:      sim_G=1.0*1.0=1.0, sim_A=0.8*0.0=0.0 → 0.0
+        assert gdp._nearest_reference_distance([1.0, 0.0, 0.0]) == pytest.approx(0.0)
+        # Identical to ancestor:  sim_G=1.0*0.0=0.0, sim_A=0.8*1.0=0.8 → 0.1
+        assert gdp._nearest_reference_distance([0.0, 1.0, 0.0]) == pytest.approx(0.1)
+        # Orthogonal to both:     sim_G=0.0, sim_A=0.0 → 0.5
+        assert gdp._nearest_reference_distance([0.0, 0.0, 1.0]) == pytest.approx(0.5)
+
+    def test_neutral_distance_when_no_references(self) -> None:
+        """With neither goals nor ancestors registered, distance is 0.5."""
+        provider = MockBaseProvider(fixed_embedding=[1.0, 0.0, 0.0], dim=3)
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(enabled=True, ancestor_tracking=True),
+        )
+        assert gdp.num_goals == 0
+        assert gdp.num_ancestors == 0
+        assert gdp._nearest_reference_distance([1.0, 0.0, 0.0]) == 0.5
+        assert gdp._nearest_reference_distance([0.5, 0.5, 0.0]) == 0.5
+
+    def test_ancestor_max_count_respected_for_reference_points(self) -> None:
+        """ancestor_max_count caps try_expand_from_clause insertions."""
+        embs = {i: [1.0, 0.0, 0.0] for i in range(1, 6)}
+        provider = PerClauseProvider(embeddings=embs, dim=3)
+        gdp = GoalDirectedEmbeddingProvider(
+            base_provider=provider,
+            config=GoalDirectedConfig(
+                enabled=True,
+                ancestor_tracking=True,
+                ancestor_proximity_threshold=0.3,
+                ancestor_max_count=2,
+            ),
+        )
+        gdp._goal_scorer.set_goals([[1.0, 0.0, 0.0]])
+
+        parents = [Clause(literals=(), id=i) for i in range(1, 6)]
+        added = gdp.try_expand_from_clause([1.0, 0.0, 0.0], parents)
+        assert added is True
+        # Only 2 of the 5 parents should have been inserted.
+        assert gdp.num_ancestors == 2
