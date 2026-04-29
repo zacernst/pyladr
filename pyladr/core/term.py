@@ -336,11 +336,12 @@ def copy_term(t: Term) -> Term:
     """Deep copy a term tree (C copy_term).
 
     Since Terms are frozen, this returns the same object for variables
-    (shared) and creates new Term instances for rigid terms.
+    (shared) and arity-0 rigid constants (routed through the intern
+    table in get_rigid_term). Complex rigid terms are freshly built.
     """
     if t.is_variable:
         return get_variable_term(t.varnum)
     if t.is_constant:
-        return Term(private_symbol=t.private_symbol)
+        return get_rigid_term(-t.private_symbol, 0)
     new_args = tuple(copy_term(a) for a in t.args)
     return Term(private_symbol=t.private_symbol, arity=t.arity, args=new_args)

@@ -301,10 +301,13 @@ class TestCopyTerm:
         assert c is x  # Variables are shared
 
     def test_copy_constant(self):
+        # Cycle 7 T6: arity-0 rigid terms are interned, so copy_term
+        # returns the same object (structurally identical, now also
+        # identity-equal). The only requirement is structural equality.
         a = get_rigid_term(1, 0)
         c = copy_term(a)
-        assert c is not a
         assert c.term_ident(a)
+        assert c is a  # interned
 
     def test_copy_complex(self):
         x = get_variable_term(0)

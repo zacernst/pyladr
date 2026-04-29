@@ -203,7 +203,9 @@ def apply_substitution(t: Term, c: Context | None) -> Term:
         return get_variable_term(c.multiplier * MAX_VARS + ps)
 
     if t.arity == 0:  # is_constant
-        return Term(private_symbol=ps)
+        # Route arity-0 rigid terms through the intern table (Cycle 7 T6).
+        # ps is negative for rigid terms, so symnum = -ps.
+        return get_rigid_term(-ps, 0)
 
     # Complex term — recursively apply to arguments
     new_args = tuple(apply_substitution(a, c) for a in t.args)
