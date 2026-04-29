@@ -54,8 +54,6 @@ class Term:
     private_symbol: int
     arity: int = 0
     args: tuple[Term, ...] = ()
-    # Unique ID for FPA indexing — not included in hash/eq
-    term_id: int = field(default=0, compare=False, hash=False)
     # Cached symbol count — computed once in __post_init__, O(1) access thereafter
     _symbol_count: int = field(default=0, compare=False, hash=False, repr=False)
 

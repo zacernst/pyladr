@@ -375,7 +375,6 @@ def augment_clause(clause: Clause, prob: float = 0.2) -> Clause:
                     private_symbol=new_varnum,
                     arity=0,
                     args=(),
-                    term_id=term.term_id,
                 )
             if term.arity == 0:
                 return term
@@ -384,7 +383,6 @@ def augment_clause(clause: Clause, prob: float = 0.2) -> Clause:
                 private_symbol=term.private_symbol,
                 arity=term.arity,
                 args=new_args,
-                term_id=term.term_id,
             )
 
         # Randomize initial variable numbering
