@@ -17,7 +17,7 @@ from pyladr.core.clause import Clause, Literal
 from pyladr.core.term import Term, get_rigid_term, get_variable_term
 from pyladr.ml.rnn2vec.algorithm import RNN2Vec, RNN2VecConfig
 from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
-from pyladr.ml.tree2vec.walks import WalkConfig, WalkType
+from pyladr.ml.rnn2vec.walks import WalkConfig, WalkType
 
 
 # ── Helpers: vampire.in domain terms ──────────────────────────────────────
@@ -319,3 +319,246 @@ class TestRNN2VecOnlineUpdate:
         model = _make_trained_rnn2vec()
         result = model.update_online([])
         assert result["pairs_trained"] == 0
+
+
+# ── Train/val/test split tests (data leakage prevention) ─────────────────
+
+
+def _many_vampire_clauses(count: int = 20) -> list[Clause]:
+    """Generate `count` distinct clauses for split-ratio testing."""
+    clauses: list[Clause] = []
+    for k in range(count):
+        x = var(k % 3)
+        y = var((k + 1) % 3)
+        atom = P(i(x, n(y)))
+        clauses.append(make_clause(make_literal(True, atom), clause_id=k + 1))
+    return clauses
+
+
+class TestRNN2VecConfigSplit:
+    def test_default_ratios_sum_to_one(self) -> None:
+        cfg = RNN2VecConfig()
+        assert cfg.train_ratio == 0.70
+        assert cfg.val_ratio == 0.15
+        assert cfg.test_ratio == 0.15
+
+    def test_ratios_must_sum_to_one(self) -> None:
+        with pytest.raises(ValueError, match="sum to 1.0"):
+            RNN2VecConfig(train_ratio=0.5, val_ratio=0.3, test_ratio=0.3)
+
+    def test_negative_ratio_rejected(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            RNN2VecConfig(train_ratio=1.1, val_ratio=-0.05, test_ratio=-0.05)
+
+    def test_zero_train_ratio_rejected(self) -> None:
+        with pytest.raises(ValueError, match="train_ratio must be > 0"):
+            RNN2VecConfig(train_ratio=0.0, val_ratio=0.5, test_ratio=0.5)
+
+    def test_custom_ratios_accepted(self) -> None:
+        cfg = RNN2VecConfig(train_ratio=0.8, val_ratio=0.1, test_ratio=0.1)
+        assert cfg.train_ratio == 0.8
+
+
+class TestRNN2VecSplit:
+    def _make_split_config(self, **overrides) -> RNN2VecConfig:
+        defaults = {
+            "walk_config": WalkConfig(
+                walk_types=(WalkType.DEPTH_FIRST, WalkType.PATH), seed=42,
+            ),
+            "rnn_config": RNNEmbeddingConfig(
+                input_dim=16, hidden_dim=32, embedding_dim=16, seed=42,
+            ),
+            "training_epochs": 1,
+            "seed": 42,
+        }
+        defaults.update(overrides)
+        return RNN2VecConfig(**defaults)
+
+    def test_stats_include_split_metrics(self) -> None:
+        """Training stats must report val_loss, test_loss, and split sizes."""
+        model = RNN2Vec(self._make_split_config())
+        stats = model.train(_many_vampire_clauses(20))
+        assert "val_loss" in stats
+        assert "test_loss" in stats
+        assert "train_clauses" in stats
+        assert "val_clauses" in stats
+        assert "test_clauses" in stats
+
+    def test_default_split_sizes(self) -> None:
+        """20 clauses with 70/15/15 → 14/3/3."""
+        model = RNN2Vec(self._make_split_config())
+        stats = model.train(_many_vampire_clauses(20))
+        assert stats["train_clauses"] == 14
+        assert stats["val_clauses"] == 3
+        assert stats["test_clauses"] == 3
+
+    def test_split_sizes_sum_to_total(self) -> None:
+        """For any N, split sizes must partition the input exactly."""
+        for n_clauses in (1, 2, 3, 4, 5, 7, 10, 25, 50):
+            model = RNN2Vec(self._make_split_config())
+            stats = model.train(_many_vampire_clauses(n_clauses))
+            total = (
+                stats["train_clauses"]
+                + stats["val_clauses"]
+                + stats["test_clauses"]
+            )
+            assert total == n_clauses, f"n={n_clauses}: {stats}"
+            # Training must always receive at least one clause when n >= 1.
+            assert stats["train_clauses"] >= 1
+
+    def test_custom_ratios_80_10_10(self) -> None:
+        """Ratios are respected: 20 clauses at 80/10/10 → 16/2/2."""
+        cfg = self._make_split_config(
+            train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
+        )
+        model = RNN2Vec(cfg)
+        stats = model.train(_many_vampire_clauses(20))
+        assert stats["train_clauses"] == 16
+        assert stats["val_clauses"] == 2
+        assert stats["test_clauses"] == 2
+
+    def test_split_is_deterministic_with_seed(self) -> None:
+        """Same seed → same split assignment (and same val/test losses)."""
+        clauses = _many_vampire_clauses(20)
+        m1 = RNN2Vec(self._make_split_config(seed=7))
+        m2 = RNN2Vec(self._make_split_config(seed=7))
+        s1 = m1.train(clauses)
+        s2 = m2.train(clauses)
+        assert s1["train_clauses"] == s2["train_clauses"]
+        assert s1["val_clauses"] == s2["val_clauses"]
+        assert s1["test_clauses"] == s2["test_clauses"]
+        assert abs(s1["val_loss"] - s2["val_loss"]) < 1e-6
+        assert abs(s1["test_loss"] - s2["test_loss"]) < 1e-6
+
+    def test_val_loss_uses_no_gradient_updates(self) -> None:
+        """Parameters must be identical before and after held-out evaluation.
+
+        Captures the encoder state right after training, re-invokes the
+        evaluator on val+test data, and asserts weights did not change.
+        """
+        model = RNN2Vec(self._make_split_config())
+        model.train(_many_vampire_clauses(20))
+
+        snapshot = {
+            name: p.detach().clone()
+            for name, p in model._encoder.named_parameters()
+        }
+        val_walks = [
+            model._walker.walks_from_clause(c)
+            for c in _many_vampire_clauses(6)
+        ]
+        import random as _r
+        model._evaluate_loss(val_walks, _r.Random(0))
+
+        for name, p in model._encoder.named_parameters():
+            assert torch.equal(snapshot[name], p), (
+                f"evaluation mutated parameter {name}"
+            )
+
+    def test_vocab_built_from_training_only(self) -> None:
+        """Vocabulary comes strictly from training walks (no val/test leakage).
+
+        Constructs a corpus where one clause contains a uniquely identifiable
+        token and verifies: if that clause is held out, its token is absent
+        from the trained vocabulary.
+        """
+        # Tokens are structural, not symbol-number-based, so use a distinct
+        # arity to produce a unique walk token.
+        unique_sym = 99
+        unique_atom = get_rigid_term(unique_sym, 3, (var(0), var(1), var(2)))
+        unique_clause = make_clause(
+            make_literal(True, unique_atom), clause_id=9999,
+        )
+        # Put the unique clause at index 0; shuffle w/ seed=42 may place it
+        # in train or val/test. We assert the property by checking both cases.
+        base_clauses = _many_vampire_clauses(19)
+        all_clauses = [unique_clause] + base_clauses
+
+        model = RNN2Vec(self._make_split_config(seed=42))
+        model.train(all_clauses)
+
+        # Reconstruct what the split produced to learn where unique_clause went.
+        import random as _r
+        rng_check = _r.Random(42)
+        train_idx, val_idx, test_idx = model._split_indices(
+            len(all_clauses), rng_check,
+        )
+        # unique_clause is at index 0 in the original list.
+        unique_in_train = 0 in train_idx
+
+        walk_tokens = set()
+        for walk in model._walker.walks_from_clause(unique_clause):
+            walk_tokens.update(walk)
+        # Tokens that appear ONLY in the unique clause structure.
+        # The unique arity-3 term produces a walk token referencing that arity.
+        distinctive = [t for t in walk_tokens if "3" in t or "arity" in t.lower()]
+
+        vocab_tokens = set(model._vocab._token_to_id.keys())
+        if not unique_in_train and distinctive:
+            # At least one distinctive token must be missing from vocab.
+            assert any(t not in vocab_tokens for t in distinctive), (
+                "held-out clause's distinctive tokens leaked into vocabulary"
+            )
+
+    def test_single_clause_all_to_training(self) -> None:
+        """Edge case: 1 clause → all goes to training, val/test empty."""
+        model = RNN2Vec(self._make_split_config())
+        stats = model.train(_many_vampire_clauses(1))
+        assert stats["train_clauses"] == 1
+        assert stats["val_clauses"] == 0
+        assert stats["test_clauses"] == 0
+        assert stats["val_loss"] == 0.0
+        assert stats["test_loss"] == 0.0
+
+    def test_empty_clauses_returns_empty_split(self) -> None:
+        """Edge case: 0 clauses → all three splits empty, no crash."""
+        model = RNN2Vec(self._make_split_config())
+        stats = model.train([])
+        assert stats["train_clauses"] == 0
+        assert stats["val_clauses"] == 0
+        assert stats["test_clauses"] == 0
+
+    def test_train_from_terms_also_splits(self) -> None:
+        """train_from_terms applies the same split to term-level inputs."""
+        model = RNN2Vec(self._make_split_config())
+        terms = [i(var(k % 3), n(var((k + 1) % 3))) for k in range(20)]
+        stats = model.train_from_terms(terms)
+        assert "val_loss" in stats
+        assert "test_loss" in stats
+        assert stats["train_clauses"] == 14
+        assert stats["val_clauses"] == 3
+        assert stats["test_clauses"] == 3
+
+    def test_save_load_preserves_split_ratios(self, tmp_path) -> None:
+        """Split ratios round-trip through save/load."""
+        cfg = self._make_split_config(
+            train_ratio=0.6, val_ratio=0.2, test_ratio=0.2,
+        )
+        model = RNN2Vec(cfg)
+        model.train(_many_vampire_clauses(10))
+        save_dir = tmp_path / "rnn2vec_split"
+        model.save(save_dir)
+
+        loaded = RNN2Vec.load(save_dir)
+        assert loaded.config.train_ratio == 0.6
+        assert loaded.config.val_ratio == 0.2
+        assert loaded.config.test_ratio == 0.2
+
+    def test_load_legacy_save_uses_default_ratios(self, tmp_path) -> None:
+        """Loading a pre-split save uses default ratios (backward-compat)."""
+        model = _make_trained_rnn2vec(embedding_dim=16)
+        save_dir = tmp_path / "legacy"
+        model.save(save_dir)
+
+        import json
+        cfg_path = save_dir / "config.json"
+        cfg_data = json.loads(cfg_path.read_text())
+        cfg_data.pop("train_ratio", None)
+        cfg_data.pop("val_ratio", None)
+        cfg_data.pop("test_ratio", None)
+        cfg_path.write_text(json.dumps(cfg_data))
+
+        loaded = RNN2Vec.load(save_dir)
+        assert loaded.config.train_ratio == 0.70
+        assert loaded.config.val_ratio == 0.15
+        assert loaded.config.test_ratio == 0.15

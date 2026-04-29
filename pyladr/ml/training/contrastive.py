@@ -375,7 +375,6 @@ def augment_clause(clause: Clause, prob: float = 0.2) -> Clause:
                     private_symbol=new_varnum,
                     arity=0,
                     args=(),
-                    container=term.container,
                     term_id=term.term_id,
                 )
             if term.arity == 0:
@@ -385,7 +384,6 @@ def augment_clause(clause: Clause, prob: float = 0.2) -> Clause:
                 private_symbol=term.private_symbol,
                 arity=term.arity,
                 args=new_args,
-                container=term.container,
                 term_id=term.term_id,
             )
 

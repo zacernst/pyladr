@@ -1,7 +1,7 @@
 """RNN2Vec: RNN-based embedding generator for logical formula trees.
 
-Like Tree2Vec but replaces skip-gram with an RNN encoder trained via
-contrastive + next-token auxiliary objectives.
+Encodes tree-walk token sequences with an RNN trained via contrastive +
+next-token auxiliary objectives to produce clause/term embeddings.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from pyladr.core.clause import Clause
 from pyladr.core.term import Term
 from pyladr.ml.rnn2vec.tokenizer import TokenVocab
-from pyladr.ml.tree2vec.walks import TreeWalker, WalkConfig, WalkType
+from pyladr.ml.rnn2vec.walks import TreeWalker, WalkConfig, WalkType
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class RNN2VecConfig:
     """Top-level RNN2Vec configuration.
 
     Attributes:
-        walk_config: Tree walk generation settings (reused from tree2vec).
+        walk_config: Tree walk generation settings.
         rnn_config: RNN encoder configuration.
         training_epochs: Number of training epochs.
         learning_rate: Initial learning rate for Adam optimizer.
@@ -55,6 +55,9 @@ class RNN2VecConfig:
         next_token_weight: Auxiliary next-token loss weight (0 = disable).
         max_bptt_steps: Maximum BPTT truncation length (0 = unlimited).
         seed: Random seed for reproducibility.
+        train_ratio: Fraction of clauses used for gradient updates.
+        val_ratio: Fraction of clauses held out for validation loss.
+        test_ratio: Fraction of clauses held out for test loss.
     """
 
     walk_config: WalkConfig = field(default_factory=WalkConfig)
@@ -66,6 +69,26 @@ class RNN2VecConfig:
     next_token_weight: float = 0.2
     max_bptt_steps: int = 30
     seed: int = 42
+    train_ratio: float = 0.70
+    val_ratio: float = 0.15
+    test_ratio: float = 0.15
+
+    def __post_init__(self) -> None:
+        for name, ratio in (
+            ("train_ratio", self.train_ratio),
+            ("val_ratio", self.val_ratio),
+            ("test_ratio", self.test_ratio),
+        ):
+            if ratio < 0:
+                raise ValueError(f"{name} must be non-negative, got {ratio}")
+        total = self.train_ratio + self.val_ratio + self.test_ratio
+        if not math.isclose(total, 1.0, abs_tol=1e-6):
+            raise ValueError(
+                f"train/val/test ratios must sum to 1.0, got {total:.4f} "
+                f"(train={self.train_ratio}, val={self.val_ratio}, test={self.test_ratio})"
+            )
+        if self.train_ratio <= 0:
+            raise ValueError(f"train_ratio must be > 0, got {self.train_ratio}")
 
 
 def _default_rnn_config():
@@ -77,9 +100,9 @@ def _default_rnn_config():
 class RNN2Vec:
     """Unsupervised RNN-based embedding generator for logical formula trees.
 
-    Replaces Tree2Vec's skip-gram with an RNN encoder that processes tree
-    walk sequences to produce fixed-dimensional embeddings. Training uses
-    InfoNCE contrastive loss with optional next-token prediction auxiliary.
+    An RNN encoder processes tree walk sequences to produce fixed-dimensional
+    embeddings. Training uses InfoNCE contrastive loss with optional
+    next-token prediction auxiliary.
     """
 
     def __init__(self, config: RNN2VecConfig | None = None) -> None:
@@ -114,13 +137,18 @@ class RNN2Vec:
     ) -> dict[str, float]:
         """Train RNN2Vec embeddings from clauses.
 
-        1. Generate walks via TreeWalker.walks_from_clauses().
-        2. Build TokenVocab from walks.
+        Pipeline:
+        1. Split clauses into train/val/test (held-out — no data leakage).
+        2. Generate walks per split; build TokenVocab from training walks only.
         3. Create RNNEncoder.
-        4. Build contrastive pairs (group walks by clause).
-        5. Train with Adam: contrastive + optional next-token auxiliary.
+        4. Train with Adam on training walks: contrastive + optional next-token aux.
+        5. Evaluate held-out val/test loss without gradient updates.
 
-        Returns training statistics dict.
+        The clause-level split prevents contrastive pair leakage (walks from a
+        single clause cannot straddle the train/val/test boundary).
+
+        Returns training statistics dict including `loss`, `val_loss`, `test_loss`,
+        and per-split clause counts.
         """
         _require_torch()
         from pyladr.ml.rnn2vec.encoder import RNNEncoder
@@ -128,19 +156,34 @@ class RNN2Vec:
         rng = random.Random(self.config.seed)
         torch.manual_seed(self.config.seed)
 
-        # 1. Generate walks grouped by clause
-        clause_walks: list[list[list[str]]] = []
-        all_walks: list[list[str]] = []
-        for clause in clauses:
-            walks = self._walker.walks_from_clause(clause)
-            clause_walks.append(walks)
-            all_walks.extend(walks)
+        # 1. Split clauses into train/val/test (prevents data leakage)
+        train_idx, val_idx, test_idx = self._split_indices(len(clauses), rng)
 
-        if not all_walks:
-            return {"loss": 0.0, "vocab_size": 0, "epochs": 0, "training_pairs": 0}
+        train_walks_per_group: list[list[list[str]]] = []
+        train_all_walks: list[list[str]] = []
+        for i in train_idx:
+            walks = self._walker.walks_from_clause(clauses[i])
+            train_walks_per_group.append(walks)
+            train_all_walks.extend(walks)
 
-        # 2. Build vocabulary
-        self._vocab = TokenVocab.from_walks(all_walks)
+        val_walks_per_group = [
+            self._walker.walks_from_clause(clauses[i]) for i in val_idx
+        ]
+        test_walks_per_group = [
+            self._walker.walks_from_clause(clauses[i]) for i in test_idx
+        ]
+
+        if not train_all_walks:
+            return {
+                "loss": 0.0, "vocab_size": 0, "epochs": 0, "training_pairs": 0,
+                "val_loss": 0.0, "test_loss": 0.0,
+                "train_clauses": float(len(train_idx)),
+                "val_clauses": float(len(val_idx)),
+                "test_clauses": float(len(test_idx)),
+            }
+
+        # 2. Build vocabulary from training walks only
+        self._vocab = TokenVocab.from_walks(train_all_walks)
 
         # 3. Create encoder
         self._encoder = RNNEncoder(self._vocab.size, self.config.rnn_config)
@@ -153,14 +196,13 @@ class RNN2Vec:
         else:
             self._next_token_head = None
 
-        # 4. Build contrastive pairs: (anchor_walk_ids, positive_walk_ids, clause_idx)
-        # Also track all walks with their clause index for negative sampling
-        walk_id_seqs: list[list[int]] = []
-        walk_clause_idx: list[int] = []
-        for ci, walks in enumerate(clause_walks):
+        # 4. Encode training walks
+        train_walk_id_seqs: list[list[int]] = []
+        train_walk_group_idx: list[int] = []
+        for ci, walks in enumerate(train_walks_per_group):
             for walk in walks:
-                walk_id_seqs.append(self._vocab.encode_walk(walk))
-                walk_clause_idx.append(ci)
+                train_walk_id_seqs.append(self._vocab.encode_walk(walk))
+                train_walk_group_idx.append(ci)
 
         # 5. Train
         params = list(self._encoder.parameters())
@@ -176,14 +218,15 @@ class RNN2Vec:
             epoch_loss = 0.0
             epoch_pairs = 0
 
-            # Build contrastive training batches
             batches = self._build_contrastive_batches(
-                walk_id_seqs, walk_clause_idx, clause_walks, rng
+                train_walk_id_seqs, train_walk_group_idx, train_walks_per_group, rng
             )
 
             for batch in batches:
                 optimizer.zero_grad()
-                loss = self._compute_batch_loss(batch, walk_id_seqs, walk_clause_idx, rng)
+                loss = self._compute_batch_loss(
+                    batch, train_walk_id_seqs, train_walk_group_idx, rng
+                )
                 if loss is not None:
                     loss.backward()
                     optimizer.step()
@@ -206,17 +249,27 @@ class RNN2Vec:
         self._encoder.eval()
         self._trained = True
 
+        # 6. Evaluate held-out val/test loss (no gradient updates)
+        val_loss = self._evaluate_loss(val_walks_per_group, rng)
+        test_loss = self._evaluate_loss(test_walks_per_group, rng)
+
         return {
             "loss": total_loss / max(total_pairs, 1),
+            "val_loss": val_loss,
+            "test_loss": test_loss,
             "vocab_size": float(self._vocab.size),
             "epochs": float(num_epochs),
             "training_pairs": float(total_pairs),
+            "train_clauses": float(len(train_idx)),
+            "val_clauses": float(len(val_idx)),
+            "test_clauses": float(len(test_idx)),
         }
 
     def train_from_terms(self, terms: Sequence[Term]) -> dict[str, float]:
         """Train directly from terms without clause wrapper.
 
         Wraps each term as a single-literal clause for walk generation.
+        Applies the same train/val/test split as `train()` at the term level.
         """
         _require_torch()
 
@@ -224,18 +277,32 @@ class RNN2Vec:
         torch.manual_seed(self.config.seed)
         from pyladr.ml.rnn2vec.encoder import RNNEncoder
 
-        # Generate walks per term
-        term_walks: list[list[list[str]]] = []
-        all_walks: list[list[str]] = []
-        for term in terms:
-            walks = self._walker.walks_from_term(term)
-            term_walks.append(walks)
-            all_walks.extend(walks)
+        train_idx, val_idx, test_idx = self._split_indices(len(terms), rng)
 
-        if not all_walks:
-            return {"loss": 0.0, "vocab_size": 0, "epochs": 0, "training_pairs": 0}
+        train_walks_per_group: list[list[list[str]]] = []
+        train_all_walks: list[list[str]] = []
+        for i in train_idx:
+            walks = self._walker.walks_from_term(terms[i])
+            train_walks_per_group.append(walks)
+            train_all_walks.extend(walks)
 
-        self._vocab = TokenVocab.from_walks(all_walks)
+        val_walks_per_group = [
+            self._walker.walks_from_term(terms[i]) for i in val_idx
+        ]
+        test_walks_per_group = [
+            self._walker.walks_from_term(terms[i]) for i in test_idx
+        ]
+
+        if not train_all_walks:
+            return {
+                "loss": 0.0, "vocab_size": 0, "epochs": 0, "training_pairs": 0,
+                "val_loss": 0.0, "test_loss": 0.0,
+                "train_clauses": float(len(train_idx)),
+                "val_clauses": float(len(val_idx)),
+                "test_clauses": float(len(test_idx)),
+            }
+
+        self._vocab = TokenVocab.from_walks(train_all_walks)
         self._encoder = RNNEncoder(self._vocab.size, self.config.rnn_config)
         self._encoder.train()
 
@@ -245,12 +312,12 @@ class RNN2Vec:
         else:
             self._next_token_head = None
 
-        walk_id_seqs: list[list[int]] = []
-        walk_clause_idx: list[int] = []
-        for ti, walks in enumerate(term_walks):
+        train_walk_id_seqs: list[list[int]] = []
+        train_walk_group_idx: list[int] = []
+        for ti, walks in enumerate(train_walks_per_group):
             for walk in walks:
-                walk_id_seqs.append(self._vocab.encode_walk(walk))
-                walk_clause_idx.append(ti)
+                train_walk_id_seqs.append(self._vocab.encode_walk(walk))
+                train_walk_group_idx.append(ti)
 
         params = list(self._encoder.parameters())
         if self._next_token_head is not None:
@@ -262,11 +329,13 @@ class RNN2Vec:
 
         for epoch in range(self.config.training_epochs):
             batches = self._build_contrastive_batches(
-                walk_id_seqs, walk_clause_idx, term_walks, rng
+                train_walk_id_seqs, train_walk_group_idx, train_walks_per_group, rng
             )
             for batch in batches:
                 optimizer.zero_grad()
-                loss = self._compute_batch_loss(batch, walk_id_seqs, walk_clause_idx, rng)
+                loss = self._compute_batch_loss(
+                    batch, train_walk_id_seqs, train_walk_group_idx, rng
+                )
                 if loss is not None:
                     loss.backward()
                     optimizer.step()
@@ -276,11 +345,19 @@ class RNN2Vec:
         self._encoder.eval()
         self._trained = True
 
+        val_loss = self._evaluate_loss(val_walks_per_group, rng)
+        test_loss = self._evaluate_loss(test_walks_per_group, rng)
+
         return {
             "loss": total_loss / max(total_pairs, 1),
+            "val_loss": val_loss,
+            "test_loss": test_loss,
             "vocab_size": float(self._vocab.size),
             "epochs": float(self.config.training_epochs),
             "training_pairs": float(total_pairs),
+            "train_clauses": float(len(train_idx)),
+            "val_clauses": float(len(val_idx)),
+            "test_clauses": float(len(test_idx)),
         }
 
     # ── Online update ──────────────────────────────────────────────────
@@ -384,7 +461,7 @@ class RNN2Vec:
         return self._encode_and_average_walks(walks)
 
     def embed_clause(self, clause: Clause) -> list[float] | None:
-        """Embed a clause matching Tree2Vec.embed_clause() semantics.
+        """Embed a clause by averaging normalized per-literal embeddings.
 
         For each literal, generate walks, encode each, apply sign scaling.
         Average all literal embeddings, then normalize.
@@ -546,6 +623,9 @@ class RNN2Vec:
             "next_token_weight": self.config.next_token_weight,
             "max_bptt_steps": self.config.max_bptt_steps,
             "seed": self.config.seed,
+            "train_ratio": self.config.train_ratio,
+            "val_ratio": self.config.val_ratio,
+            "test_ratio": self.config.test_ratio,
         }
 
         (save_dir / "config.json").write_text(
@@ -615,6 +695,9 @@ class RNN2Vec:
             next_token_weight=config_data["next_token_weight"],
             max_bptt_steps=config_data["max_bptt_steps"],
             seed=config_data["seed"],
+            train_ratio=config_data.get("train_ratio", 0.70),
+            val_ratio=config_data.get("val_ratio", 0.15),
+            test_ratio=config_data.get("test_ratio", 0.15),
         )
 
         # Load vocabulary
@@ -642,6 +725,87 @@ class RNN2Vec:
         return instance
 
     # ── Internal helpers ───────────────────────────────────────────────
+
+    def _split_indices(
+        self,
+        n: int,
+        rng: random.Random,
+    ) -> tuple[list[int], list[int], list[int]]:
+        """Partition n clause/term indices into train/val/test.
+
+        Splits at the clause level (not the walk level) to ensure no
+        contrastive pair straddles the train/val/test boundary. Deterministic
+        given the caller's seeded `rng`.
+
+        Small-N handling: training gets at least one item whenever n >= 1.
+        Val/test may be empty for very small corpora — their loss is reported
+        as 0.0 in that case.
+        """
+        if n == 0:
+            return [], [], []
+
+        indices = list(range(n))
+        rng.shuffle(indices)
+
+        n_train = int(n * self.config.train_ratio)
+        n_val = int(n * (self.config.train_ratio + self.config.val_ratio)) - n_train
+
+        if n_train == 0:
+            n_train = 1
+            if n_val > 0:
+                n_val -= 1
+
+        n_val = max(0, n_val)
+        if n_train + n_val > n:
+            n_val = n - n_train
+
+        train_idx = indices[:n_train]
+        val_idx = indices[n_train : n_train + n_val]
+        test_idx = indices[n_train + n_val :]
+
+        return train_idx, val_idx, test_idx
+
+    def _evaluate_loss(
+        self,
+        walks_per_group: list[list[list[str]]],
+        rng: random.Random,
+    ) -> float:
+        """Compute average loss on held-out data without gradient updates.
+
+        Uses the same contrastive + next-token objective as training but
+        performs no backprop and no optimizer step. Returns 0.0 if the held-out
+        set is empty or no contrastive pairs can be formed (e.g. only single-walk
+        groups with next_token_weight=0).
+        """
+        if not walks_per_group or self._vocab is None or self._encoder is None:
+            return 0.0
+
+        walk_id_seqs: list[list[int]] = []
+        walk_group_idx: list[int] = []
+        for gi, walks in enumerate(walks_per_group):
+            for walk in walks:
+                walk_id_seqs.append(self._vocab.encode_walk(walk))
+                walk_group_idx.append(gi)
+
+        if not walk_id_seqs:
+            return 0.0
+
+        batches = self._build_contrastive_batches(
+            walk_id_seqs, walk_group_idx, walks_per_group, rng
+        )
+
+        total_loss = 0.0
+        total_pairs = 0
+        with torch.no_grad():
+            for batch in batches:
+                loss = self._compute_batch_loss(
+                    batch, walk_id_seqs, walk_group_idx, rng
+                )
+                if loss is not None:
+                    total_loss += loss.item()
+                    total_pairs += len(batch)
+
+        return total_loss / max(total_pairs, 1)
 
     def _build_contrastive_batches(
         self,

@@ -13,7 +13,7 @@ from pyladr.core.term import get_rigid_term, get_variable_term
 from pyladr.ml.rnn2vec.algorithm import RNN2Vec, RNN2VecConfig
 from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
 from pyladr.ml.rnn2vec.provider import RNN2VecEmbeddingProvider, RNN2VecProviderConfig
-from pyladr.ml.tree2vec.walks import WalkConfig, WalkType
+from pyladr.ml.rnn2vec.walks import WalkConfig, WalkType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -263,7 +263,7 @@ class TestRNN2VecProviderFactory:
         if not os.path.exists(filepath):
             pytest.skip("vampire.in fixture not found")
 
-        from pyladr.ml.tree2vec.vampire_parser import parse_vampire_file
+        from pyladr.ml.rnn2vec.vampire_parser import parse_vampire_file
         corpus = parse_vampire_file(filepath)
 
         config = RNN2VecProviderConfig(

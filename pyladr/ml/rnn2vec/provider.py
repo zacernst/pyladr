@@ -39,12 +39,12 @@ from typing import TYPE_CHECKING
 from pyladr.ml.embeddings.cache import clause_structural_hash
 from pyladr.ml.rnn2vec.algorithm import RNN2Vec, RNN2VecConfig
 from pyladr.ml.rnn2vec.formula_processor import (
+    AugmentationConfig,
     RNN2VecProcessingResult,
     process_vampire_corpus,
     process_vampire_file,
 )
-from pyladr.ml.tree2vec.formula_processor import AugmentationConfig
-from pyladr.ml.tree2vec.vampire_parser import VampireCorpus
+from pyladr.ml.rnn2vec.vampire_parser import VampireCorpus
 
 if TYPE_CHECKING:
     from pyladr.core.clause import Clause
@@ -223,6 +223,39 @@ class RNN2VecEmbeddingProvider:
             augmentation_config=config.augmentation_config,
         )
         return cls(rnn2vec=result.rnn2vec, config=config)
+
+    @classmethod
+    def from_sos_clauses(
+        cls,
+        sos_clauses,
+        symbol_table,
+        config: RNN2VecProviderConfig | None = None,
+    ) -> tuple[RNN2VecEmbeddingProvider, dict[str, float]]:
+        """Train a provider in-process from a list of SOS clauses.
+
+        Wraps VampireCorpus construction + process_vampire_corpus + provider
+        instantiation so callers (notably the search engine) stay within the
+        rnn2vec public surface — no need to import walks/vampire_parser
+        internals across the search/ml trust boundary.
+
+        Returns:
+            Tuple of (trained_provider, training_stats).
+        """
+        config = config or RNN2VecProviderConfig()
+        corpus = VampireCorpus(
+            sos_clauses=tuple(sos_clauses),
+            goal_clauses=(),
+            all_terms=(),
+            all_subterms=(),
+            symbol_table=symbol_table,
+        )
+        result = process_vampire_corpus(
+            corpus,
+            rnn2vec_config=config.rnn2vec_config,
+            augmentation_config=config.augmentation_config,
+        )
+        provider = cls(rnn2vec=result.rnn2vec, config=config)
+        return provider, result.training_stats
 
     # ── EmbeddingProvider protocol ────────────────────────────────────
 
@@ -427,3 +460,40 @@ class RNN2VecEmbeddingProvider:
             return 0
         with self._cache_lock:
             return len(self._cache)
+
+
+# ── Module-level helpers ─────────────────────────────────────────────────────
+
+
+def build_provider_config_from_search_options(opts) -> RNN2VecProviderConfig:
+    """Assemble an RNN2VecProviderConfig from a SearchOptions-like object.
+
+    Accepts any object exposing the `rnn2vec_*` fields defined on
+    `pyladr.search.options.SearchOptions`. Keeps WalkConfig /
+    RNNEmbeddingConfig / RNN2VecConfig imports inside the ml package,
+    so search modules don't need to reach into rnn2vec internals.
+    """
+    from pyladr.ml.rnn2vec.algorithm import RNN2VecConfig
+    from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
+    from pyladr.ml.rnn2vec.walks import WalkConfig
+
+    return RNN2VecProviderConfig(
+        rnn2vec_config=RNN2VecConfig(
+            walk_config=WalkConfig(
+                max_walk_length=opts.rnn2vec_max_walk_length,
+                include_var_identity=opts.rnn2vec_include_var_identity,
+            ),
+            rnn_config=RNNEmbeddingConfig(
+                rnn_type=opts.rnn2vec_rnn_type,
+                hidden_dim=opts.rnn2vec_hidden_dim,
+                embedding_dim=opts.rnn2vec_embedding_dim,
+                input_dim=opts.rnn2vec_input_dim,
+                num_layers=opts.rnn2vec_num_layers,
+                bidirectional=opts.rnn2vec_bidirectional,
+                composition=opts.rnn2vec_composition,
+            ),
+            training_epochs=opts.rnn2vec_training_epochs,
+            learning_rate=opts.rnn2vec_training_lr,
+        ),
+        cache_max_entries=opts.rnn2vec_cache_max_entries,
+    )

@@ -15,7 +15,7 @@ from pyladr.core.clause import Clause, Literal
 from pyladr.core.term import get_rigid_term, get_variable_term
 from pyladr.ml.rnn2vec.algorithm import RNN2Vec, RNN2VecConfig
 from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
-from pyladr.ml.tree2vec.walks import WalkConfig, WalkType
+from pyladr.ml.rnn2vec.walks import WalkConfig, WalkType
 
 SYM_P = 1
 SYM_I = 2

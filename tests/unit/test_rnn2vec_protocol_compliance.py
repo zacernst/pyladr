@@ -11,7 +11,7 @@ from pyladr.core.term import get_rigid_term, get_variable_term
 from pyladr.ml.rnn2vec.algorithm import RNN2Vec, RNN2VecConfig
 from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
 from pyladr.ml.rnn2vec.provider import RNN2VecEmbeddingProvider, RNN2VecProviderConfig
-from pyladr.ml.tree2vec.walks import WalkConfig, WalkType
+from pyladr.ml.rnn2vec.walks import WalkConfig, WalkType
 from pyladr.protocols import EmbeddingProvider
 
 SYM_P = 1

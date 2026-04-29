@@ -1,8 +1,7 @@
 """Formula processing and data augmentation for RNN2Vec training.
 
-Reuses the augmentation pipeline from Tree2Vec (variable renamings,
-reversed literals, subterm extraction) but trains an RNN2Vec model
-instead of a skip-gram.
+Applies data augmentation (variable renamings, reversed literals, subterm
+extraction) before training an RNN2Vec model.
 """
 
 from __future__ import annotations
@@ -15,16 +14,29 @@ from typing import TYPE_CHECKING
 from pyladr.core.clause import Clause, Literal
 from pyladr.core.term import Term
 from pyladr.ml.rnn2vec.algorithm import RNN2Vec, RNN2VecConfig
-from pyladr.ml.tree2vec.formula_processor import (
-    AugmentationConfig,
-    _rename_variables,
-)
-from pyladr.ml.tree2vec.vampire_parser import VampireCorpus, parse_vampire_file
+from pyladr.ml.rnn2vec.vampire_parser import VampireCorpus, parse_vampire_file
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AugmentationConfig:
+    """Configuration for training data augmentation.
+
+    Attributes:
+        num_variable_renamings: Number of α-equivalent variants per clause.
+        include_subterm_trees: Whether to add individual subterm trees.
+        include_reversed_literals: Whether to include clauses with flipped literal order.
+        seed: Random seed for reproducibility.
+    """
+
+    num_variable_renamings: int = 5
+    include_subterm_trees: bool = True
+    include_reversed_literals: bool = True
+    seed: int = 42
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,4 +163,55 @@ def process_vampire_file(
     corpus = parse_vampire_file(filepath)
     return process_vampire_corpus(
         corpus, rnn2vec_config, augmentation_config, progress_fn=progress_fn
+    )
+
+
+# ── Variable renaming (α-equivalence augmentation) ───────────────────────────
+
+
+def _rename_variables(clause: Clause, rng: random.Random) -> Clause | None:
+    """Create an α-equivalent clause with permuted variable numbers.
+
+    Collects all variable numbers in the clause, generates a random
+    permutation, and applies it consistently across all literals.
+
+    Returns None if the clause has no variables (nothing to rename).
+    """
+    # Collect all variable numbers
+    var_nums: set[int] = set()
+    for lit in clause.literals:
+        var_nums.update(lit.atom.variables())
+
+    if not var_nums:
+        return None
+
+    # Create a random permutation mapping
+    var_list = sorted(var_nums)
+    shuffled = list(var_list)
+    rng.shuffle(shuffled)
+    var_map = dict(zip(var_list, shuffled))
+
+    # Apply renaming to all literals
+    new_literals = tuple(
+        Literal(sign=lit.sign, atom=_rename_term_vars(lit.atom, var_map))
+        for lit in clause.literals
+    )
+
+    return Clause(literals=new_literals, weight=clause.weight)
+
+
+def _rename_term_vars(term: Term, var_map: dict[int, int]) -> Term:
+    """Recursively rename variables in a term according to var_map."""
+    if term.is_variable:
+        new_varnum = var_map.get(term.varnum, term.varnum)
+        return Term(private_symbol=new_varnum, arity=0, args=())
+
+    if term.is_constant:
+        return term
+
+    new_args = tuple(_rename_term_vars(arg, var_map) for arg in term.args)
+    return Term(
+        private_symbol=term.private_symbol,
+        arity=term.arity,
+        args=new_args,
     )
