@@ -6,10 +6,8 @@ age-based, and ratio-based strategies as in the C Prover9 implementation.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from enum import IntEnum, auto
-from typing import Callable, NamedTuple
+from enum import IntEnum
 
 from pyladr.core.clause import Clause
 from pyladr.search.priority_sos import PrioritySOS
@@ -22,12 +20,7 @@ class SelectionOrder(IntEnum):
     WEIGHT = 0   # Select lightest clause (C: GS_ORDER_WEIGHT)
     AGE = 1      # Select oldest clause (C: GS_ORDER_AGE)
     RANDOM = 2   # Select random clause (C: GS_ORDER_RANDOM)
-    ENTROPY = 3  # Select highest-entropy clause (structural diversity)
     UNIFICATION_PENALTY = 4  # Select lowest-penalty clause (most specific preferred)
-    FORTE = 5  # Select by FORTE embedding diversity score
-    PROOF_GUIDED = 6  # Select by proof-guided exploitation/exploration blend
-    TREE2VEC = 7  # Select by Tree2Vec structural embedding diversity
-    TREE2VEC_MAXIMIN = 8  # Select by Tree2Vec maximin: highest floor similarity across all goals
     RNN2VEC = 9  # Select by RNN2Vec structural embedding diversity
     RNN2VEC_RANDOM_GOAL = 10  # Select SOS clause nearest to a randomly-chosen unproven goal
 
@@ -157,27 +150,12 @@ class GivenSelection:
             return sos.pop_first()
         if order == SelectionOrder.WEIGHT:
             return sos.pop_lightest()
-        if order == SelectionOrder.ENTROPY:
-            return sos.pop_highest_entropy()
         if order == SelectionOrder.UNIFICATION_PENALTY:
             return sos.pop_lowest_penalty()
-        if order == SelectionOrder.FORTE:
-            return sos.pop_best_forte()
-        if order == SelectionOrder.PROOF_GUIDED:
-            return sos.pop_best_proof_guided()
-        if order in (SelectionOrder.TREE2VEC, SelectionOrder.TREE2VEC_MAXIMIN):
-            # Both T2V variants reuse the FORTE diversity heap for fallback.
-            # The actual per-clause scoring is handled upstream in
-            # GivenClauseSearch._make_inferences() before select_given() is
-            # called, so this path is only reached when that scoring returns
-            # None (no embeddings available yet).
-            result = sos.pop_best_forte()
-            return result if result is not None else sos.pop_first()
         if order in (SelectionOrder.RNN2VEC, SelectionOrder.RNN2VEC_RANDOM_GOAL):
-            # Both RNN2Vec selection modes are handled upstream by GivenClauseSearch.
+            # RNN2Vec selection modes are handled upstream by GivenClauseSearch.
             # This fallback is reached when no embeddings are available yet.
-            result = sos.pop_best_forte()
-            return result if result is not None else sos.pop_first()
+            return sos.pop_first()
         # RANDOM: fall back to age
         return sos.pop_first()
 
@@ -205,17 +183,6 @@ class GivenSelection:
                     best = c
             return best
 
-        if order == SelectionOrder.ENTROPY:
-            # Highest entropy clause (most structurally diverse)
-            best_c: Clause | None = None
-            best_entropy = -1.0
-            for c in sos:
-                e = _clause_entropy(c)
-                if e > best_entropy or (e == best_entropy and (best_c is None or c.id < best_c.id)):
-                    best_entropy = e
-                    best_c = c
-            return best_c
-
         if order == SelectionOrder.UNIFICATION_PENALTY:
             # Lowest penalty clause (most specific preferred)
             best_p: Clause | None = None
@@ -227,76 +194,9 @@ class GivenSelection:
                     best_p = c
             return best_p
 
-        if PrioritySOS.supports_order(order):
-            # ML-based orders require heap-backed extraction that only
-            # PrioritySOS provides.  This code path should never be
-            # reached in practice because these orders are only added
-            # when the corresponding flags force priority_sos=True.
-            raise ValueError(
-                f"SelectionOrder.{order.name} requires PrioritySOS. "
-                f"Enable priority_sos or remove the {order.name.lower()} "
-                f"selection rule."
-            )
-
-        # RANDOM: not implemented yet, fall back to age
+        # RANDOM and RNN2Vec variants: fall back to age-based selection
+        # when the specialized path is not available.
         return sos.first
-
-
-class NodeCounts(NamedTuple):
-    """Counts of each node type in a clause tree."""
-
-    clause: int = 0
-    literal: int = 0
-    predicate: int = 0
-    function: int = 0
-    variable: int = 0
-    constant: int = 0
-
-
-def _clause_entropy(clause: Clause) -> float:
-    """Calculate Shannon entropy of a clause's node-type distribution.
-
-    Classifies each node in the clause tree into one of 6 types:
-    clause, literal, predicate, function, variable, constant.
-    Returns H = -sum(p * log2(p)) over the type distribution.
-
-    Performance: O(n) where n = total term nodes. Uses a flat array
-    for counts to minimize overhead (no dict allocation per call).
-    """
-    # Mutable list for accumulation: [clause, literal, predicate, function, variable, constant]
-    counts = [1, len(clause.literals), 0, 0, 0, 0]
-
-    for lit in clause.literals:
-        _count_nodes_flat(lit.atom, counts, True)
-
-    total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4] + counts[5]
-    if total <= 1:
-        return 0.0
-
-    entropy = 0.0
-    for c in counts:
-        if c > 0:
-            p = c / total
-            entropy -= p * math.log2(p)
-    return entropy
-
-
-def _count_nodes_flat(term, counts: list, is_predicate: bool) -> None:
-    """Count term nodes into flat array.
-
-    Indices: 0=clause, 1=literal, 2=predicate, 3=function, 4=variable, 5=constant.
-    """
-    if term.is_variable:
-        counts[4] += 1
-    elif term.is_constant:
-        counts[5] += 1
-    else:
-        if is_predicate:
-            counts[2] += 1
-        else:
-            counts[3] += 1
-        for arg in term.args:
-            _count_nodes_flat(arg, counts, False)
 
 
 def _clause_generality_penalty(clause: Clause) -> float:

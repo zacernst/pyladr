@@ -86,7 +86,6 @@ class SelectionConfig:
     priority_sos: bool = True
     lazy_demod: bool = False
     sos_limit: int = -1
-    entropy_weight: int = 0
     unification_weight: int = 0
 
 
@@ -184,11 +183,6 @@ class SearchOptions:
     # Default 4 matches C Prover9's age_factor=5 (1 age + 4 weight = 5 total).
     weight_ratio: int = 4
 
-    # Entropy-based selection: ratio weight for entropy selector in the cycle.
-    # 0 = disabled (default). e.g., entropy_weight=2 with default ratio=5
-    # gives cycle: 1 age + 4 weight + 2 entropy = 7 total.
-    entropy_weight: int = 0
-
     # Unification penalty selection: ratio weight for penalty selector.
     # 0 = disabled (default). Prefers most specific clauses (lowest penalty).
     # e.g., unification_weight=2 gives cycle: 1 age + 4 weight + 2 penalty.
@@ -255,37 +249,6 @@ class SearchOptions:
     learn_from_back_subsumption: bool = False
     learn_from_forward_subsumption: bool = False
 
-    # FORTE Embedding Integration
-    forte_embeddings: bool = False
-    forte_weight: float = 0.0   # selection ratio weight (0 = disabled)
-    forte_embedding_dim: int = 128
-    forte_cache_max_entries: int = 10_000
-
-    # Tree2Vec Embedding Integration
-    tree2vec_embeddings: bool = False
-    tree2vec_weight: float = 0.0   # selection ratio weight (0 = disabled)
-    tree2vec_embedding_dim: int = 64
-    tree2vec_cache_max_entries: int = 10_000
-    tree2vec_include_position: bool = False  # encode argument position in walk tokens
-    tree2vec_include_depth: bool = False     # encode tree depth in walk tokens
-    tree2vec_include_var_identity: bool = False  # De Bruijn-style variable identity in walk tokens
-    tree2vec_skip_predicate: bool = True     # skip predicate wrapper, walk from args directly
-    tree2vec_include_path_length: bool = True   # prepend path length token to PATH walks
-    tree2vec_composition: str = "weighted_depth"  # embedding composition: mean, weighted_depth, root_concat
-    tree2vec_online_learning: bool = False   # enable online tree2vec updates during search
-    tree2vec_online_update_interval: int = 20  # clauses kept between online updates
-    tree2vec_online_batch_size: int = 10     # max clauses per online update batch
-    tree2vec_online_lr: float = 0.005        # learning rate for online skipgram updates
-    tree2vec_online_max_updates: int = 0     # stop updating after N retrainings (0 = unlimited)
-    tree2vec_bg_update: bool = True   # run update_online on a daemon thread (False = sync, useful for tests)
-    tree2vec_dump_embeddings: str = ""  # path to write SOS embedding JSON after each training; "" = disabled
-    tree2vec_goal_proximity: bool = False    # enable goal-directed tree2vec selection
-    tree2vec_goal_proximity_weight: float = 0.3  # goal proximity influence weight
-    tree2vec_cross_arg_proximity: bool = True  # cross-argument proximity for CD compatibility
-    tree2vec_proximity_report_interval: int = 100  # given clauses between proximity trend reports
-    tree2vec_maximin_weight: float = 0.0  # selection ratio weight for maximin T2V (0 = disabled)
-    tree2vec_model_path: str = ""   # path to pre-trained model; "" = train on initial clauses
-
     # RNN2Vec Embedding Integration
     rnn2vec_embeddings: bool = False
     rnn2vec_weight: float = 0.0        # selection ratio weight (0 = disabled)
@@ -296,6 +259,8 @@ class SearchOptions:
     rnn2vec_num_layers: int = 1
     rnn2vec_bidirectional: bool = False
     rnn2vec_composition: str = "mean"  # last_hidden, mean_pool, attention_pool
+    rnn2vec_max_walk_length: int = 0   # 0 = unlimited
+    rnn2vec_include_var_identity: bool = False  # De Bruijn-style variable identity in walk tokens
     rnn2vec_cache_max_entries: int = 10_000
     rnn2vec_online_learning: bool = False
     rnn2vec_online_update_interval: int = 20
@@ -308,19 +273,14 @@ class SearchOptions:
     rnn2vec_training_lr: float = 0.001
     rnn2vec_goal_proximity: bool = False          # enable goal-directed rnn2vec selection
     rnn2vec_goal_proximity_weight: float = 0.3   # goal proximity influence weight
+    rnn2vec_ancestor_tracking: bool = True
+    rnn2vec_ancestor_proximity_threshold: float = 0.3
+    rnn2vec_ancestor_max_count: int = 500
+    rnn2vec_ancestor_decay: float = 0.8          # weight multiplier per depth level
+    rnn2vec_ancestor_min_weight: float = 0.1     # recursion cutoff when decay^depth < this
+    rnn2vec_ancestor_max_depth: int = 5          # hard cap on ancestor recursion depth
     rnn2vec_random_goal_weight: float = 0.0      # selection ratio for random-goal proximity mode
     rnn2vec_dump_embeddings: str = ""            # path to write SOS embedding JSON; "" = disabled
-
-    # Proof-guided selection: learn from successful proof patterns.
-    # Requires FORTE embeddings (forte_embeddings=True).
-    # Blends exploitation (similarity to proof patterns) with exploration (diversity).
-    proof_guided: bool = False
-    proof_guided_weight: float = 0.0               # Selection ratio weight (0 = disabled in cycle)
-    proof_guided_exploitation_ratio: float = 0.7   # 0.0=pure exploration, 1.0=pure exploitation
-    proof_guided_max_patterns: int = 500            # Max stored proof pattern embeddings
-    proof_guided_decay_rate: float = 0.95           # Exponential decay per proof event (0,1]
-    proof_guided_min_similarity: float = 0.1        # Minimum cosine similarity threshold
-    proof_guided_warmup_proofs: int = 1             # Proofs required before activation
 
     def __post_init__(self) -> None:
         """Validate option bounds and cross-field constraints."""
@@ -361,7 +321,6 @@ _NUMERIC_BOUNDS: list[tuple[str, float | None, float | None, str]] = [
     # Selection weights
     ("weight_ratio", 0, None, "weight-to-age selection ratio"),
     ("hint_wt", 0.0, None, "weight assigned to hint-matched clauses"),
-    ("entropy_weight", 0, None, "entropy selection weight"),
     ("unification_weight", 0, None, "unification selection weight"),
     # Penalty propagation
     ("penalty_propagation_decay", 0.0, 1.0, "penalty propagation decay"),
@@ -385,27 +344,13 @@ _NUMERIC_BOUNDS: list[tuple[str, float | None, float | None, str]] = [
     ("embedding_dim", 1, 4096, "embedding dimension"),
     ("goal_proximity_weight", 0.0, 1.0, "goal proximity weight"),
     ("embedding_evolution_rate", 0.0, 1.0, "embedding evolution rate"),
-    # FORTE
-    ("forte_weight", 0.0, None, "FORTE embedding selection ratio weight"),
-    ("forte_embedding_dim", 1, 4096, "FORTE embedding dimension"),
-    ("forte_cache_max_entries", 1, 10_000_000, "FORTE cache size"),
-    # Tree2Vec
-    ("tree2vec_weight", 0.0, None, "Tree2Vec embedding selection ratio weight"),
-    ("tree2vec_maximin_weight", 0.0, None, "Tree2Vec maximin selection ratio weight"),
-    ("tree2vec_embedding_dim", 1, 4096, "Tree2Vec embedding dimension"),
-    ("tree2vec_cache_max_entries", 1, 10_000_000, "Tree2Vec cache size"),
-    ("tree2vec_online_lr", 0.0001, 1.0, "Tree2Vec online learning rate"),
-    ("tree2vec_online_update_interval", 1, 10_000, "Tree2Vec online update interval"),
-    ("tree2vec_online_batch_size", 1, 10_000, "Tree2Vec online batch size"),
-    ("tree2vec_online_max_updates", 0, None, "Tree2Vec max online updates (0=unlimited)"),
-    ("tree2vec_goal_proximity_weight", 0.0, 1.0, "Tree2Vec goal proximity weight"),
-    ("tree2vec_proximity_report_interval", 1, 100_000, "Tree2Vec proximity report interval"),
     # RNN2Vec
     ("rnn2vec_weight", 0.0, None, "RNN2Vec embedding selection weight"),
     ("rnn2vec_embedding_dim", 1, 4096, "RNN2Vec output embedding dimension"),
     ("rnn2vec_hidden_dim", 1, 4096, "RNN2Vec RNN hidden dimension"),
     ("rnn2vec_input_dim", 1, 4096, "RNN2Vec token embedding dimension"),
     ("rnn2vec_num_layers", 1, 10, "RNN2Vec number of RNN layers"),
+    ("rnn2vec_max_walk_length", 0, 100_000, "RNN2Vec max walk length (0=unlimited)"),
     ("rnn2vec_cache_max_entries", 1, 10_000_000, "RNN2Vec embedding cache size"),
     ("rnn2vec_online_lr", 0.00001, 1.0, "RNN2Vec online learning rate"),
     ("rnn2vec_online_update_interval", 1, 10_000, "RNN2Vec online update interval"),
@@ -414,14 +359,12 @@ _NUMERIC_BOUNDS: list[tuple[str, float | None, float | None, str]] = [
     ("rnn2vec_training_epochs", 1, 1000, "RNN2Vec training epochs"),
     ("rnn2vec_training_lr", 0.00001, 1.0, "RNN2Vec initial training learning rate"),
     ("rnn2vec_goal_proximity_weight", 0.0, 1.0, "RNN2Vec goal proximity influence weight"),
+    ("rnn2vec_ancestor_proximity_threshold", 0.0, 1.0, "RNN2Vec ancestor proximity threshold"),
+    ("rnn2vec_ancestor_max_count", 1, 100_000, "RNN2Vec ancestor max count"),
+    ("rnn2vec_ancestor_decay", 0.0, 1.0, "RNN2Vec ancestor decay per depth level"),
+    ("rnn2vec_ancestor_min_weight", 0.0, 1.0, "RNN2Vec ancestor min weight cutoff"),
+    ("rnn2vec_ancestor_max_depth", 1, 100, "RNN2Vec ancestor max recursion depth"),
     ("rnn2vec_random_goal_weight", 0.0, None, "RNN2Vec random-goal selection ratio weight"),
-    # Proof-guided selection
-    ("proof_guided_weight", 0.0, None, "proof-guided selection ratio weight"),
-    ("proof_guided_exploitation_ratio", 0.0, 1.0, "proof-guided exploitation ratio"),
-    ("proof_guided_max_patterns", 1, 100_000, "proof-guided max patterns"),
-    ("proof_guided_decay_rate", 0.0, 1.0, "proof-guided decay rate"),
-    ("proof_guided_min_similarity", 0.0, 1.0, "proof-guided min similarity threshold"),
-    ("proof_guided_warmup_proofs", 0, 1000, "proof-guided warmup proofs"),
 ]
 
 _VALID_PENALTY_PROPAGATION_MODES = frozenset({"additive", "multiplicative", "max"})
@@ -488,11 +431,6 @@ def validate_search_options_semantic(opts: object) -> list[str]:
     if pw_mode not in _VALID_PENALTY_WEIGHT_MODES:
         warnings.append(
             f"penalty_weight_mode={pw_mode!r} unrecognized, will fall back to exponential"
-        )
-
-    if getattr(opts, "proof_guided", False) and not getattr(opts, "forte_embeddings", False):
-        warnings.append(
-            "proof_guided=True has no effect without forte_embeddings=True"
         )
 
     return warnings

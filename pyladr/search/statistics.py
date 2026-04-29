@@ -44,11 +44,6 @@ class SearchStatistics:
     # Penalty weight adjustment
     penalty_weight_adjusted: int = 0
 
-    # T2V goal-distance histogram: {"proof": [5 counts], "non_proof": [5 counts]}
-    # Buckets: [0-0.2), [0.2-0.4), [0.4-0.6), [0.6-0.8), [0.8-1.0]
-    # Low distance = close to goal; high distance = far from goal.
-    t2v_distance_histogram: dict | None = field(default=None)
-
     # Timing
     start_time: float = 0.0
     search_start_time: float = 0.0

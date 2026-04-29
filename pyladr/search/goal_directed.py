@@ -15,6 +15,21 @@ Design:
     drop-in replacement. The selection layer (EmbeddingEnhancedSelection)
     does not need to know about goal-directed features.
 
+Recursive ancestor tracking:
+    The productive reference set is built recursively.  Goals sit at
+    depth 0 with weight 1.0.  When any kept clause is found close to a
+    current reference point (goal or existing ancestor), its parents are
+    added as new reference points at ``depth+1`` with weight
+    ``ancestor_decay**(depth+1)``.  Expansion halts when the new depth
+    exceeds ``ancestor_max_depth`` or the new weight falls below
+    ``ancestor_min_weight``.
+
+    Distance to the combined reference set uses the weighted formula
+    ``(1 - max_i w_i * cos(e, r_i)) / 2`` so that orthogonality maps to
+    the neutral value 0.5, identity with a depth-0 goal to 0.0, and
+    identity with a deep ancestor to a value increasing gently with
+    depth.
+
 Thread-safety:
     Goal registration and embedding reads use a readers–writer lock
     to allow concurrent reads during inference while serialising
@@ -26,6 +41,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -41,6 +57,24 @@ logger = logging.getLogger(__name__)
 # ── Configuration ──────────────────────────────────────────────────────────
 
 
+@dataclass(slots=True)
+class ReferencePoint:
+    """A depth-tagged entry in the productive reference set.
+
+    Attributes:
+        embedding: The clause's embedding vector.
+        depth: Number of hops from a goal. 0 = goal, 1 = parent of a
+            goal-proximate clause, etc.
+        weight: ``ancestor_decay**depth``, pre-computed at insertion and
+            used to down-weight similarity contributions from deeper
+            ancestors when scoring.
+    """
+
+    embedding: list[float]
+    depth: int
+    weight: float
+
+
 @dataclass(frozen=True, slots=True)
 class GoalDirectedConfig:
     """Configuration for goal-directed embedding enhancement.
@@ -52,6 +86,16 @@ class GoalDirectedConfig:
         proximity_method: Unused. Kept for backwards compatibility.
         online_learning: Enable online contrastive learning from feedback.
         feedback_buffer_size: Max feedback pairs to retain for learning.
+        ancestor_tracking: Enable recursive productive-ancestor expansion.
+        ancestor_proximity_threshold: Reference distance below which a
+            clause's parents are eligible for expansion.
+        ancestor_max_count: Cap on total retained reference points.
+        ancestor_decay: Weight multiplier per depth level. ``0.8`` means
+            depth-1 ancestors contribute at 80% of the goal's influence,
+            depth-2 at 64%, and so on.
+        ancestor_min_weight: Stop recursion when
+            ``ancestor_decay**depth`` falls below this cutoff.
+        ancestor_max_depth: Hard cap on recursion depth (CLI-exposed).
     """
 
     enabled: bool = False
@@ -59,6 +103,12 @@ class GoalDirectedConfig:
     proximity_method: str = "max"  # unused; kept for backwards compatibility
     online_learning: bool = False
     feedback_buffer_size: int = 1000
+    ancestor_tracking: bool = True
+    ancestor_proximity_threshold: float = 0.3  # ref dist below which parents are expanded
+    ancestor_max_count: int = 500              # max reference points to retain
+    ancestor_decay: float = 0.8                # weight multiplier per depth level
+    ancestor_min_weight: float = 0.1           # stop recursion when decay^depth < this
+    ancestor_max_depth: int = 5                # hard cap on depth (CLI-exposed)
 
 
 # ── Goal clause normalisation ──────────────────────────────────────────────
@@ -232,6 +282,8 @@ class GoalDirectedEmbeddingProvider:
         "_proofs_observed",
         "_feedback_pairs",
         "_feedback_buffer",
+        "_ancestor_reference",
+        "_ancestor_lock",
     )
 
     def __init__(
@@ -248,6 +300,10 @@ class GoalDirectedEmbeddingProvider:
         self._proofs_observed: int = 0
         self._feedback_pairs: int = 0
         self._feedback_buffer: list[tuple[list[float], list[float], bool]] = []
+        self._ancestor_reference: deque[ReferencePoint] = deque(
+            maxlen=self._config.ancestor_max_count
+        )
+        self._ancestor_lock = threading.Lock()
 
     # ── EmbeddingProvider protocol ─────────────────────────────────────
 
@@ -280,21 +336,23 @@ class GoalDirectedEmbeddingProvider:
     def register_goals(self, goals: list[Clause]) -> None:
         """Register goal clauses for distance scoring.
 
-        Normalises each goal before embedding:
+        Each goal is normalised before embedding:
         1. Literal signs are forced to positive so the embedding points
-           toward the goal's structural content, not away from it.
-        2. Skolem constants are replaced by variables so the embedding
-           captures pure structural shape (e.g. P(i(x,y)) instead of
-           P(i(c1,c2))).  This makes distance meaningful for derived
-           clauses that share the same predicate/function structure but
-           contain different constants or variables.
+           toward the goal's structural content rather than away from it.
+        2. Constants are replaced by variables (deskolemization) so that
+           any derived clause whose variables can be substituted to match
+           the goal's constants appears at distance 0 — exactly the clauses
+           that can directly resolve with the goal literal.
+
+        Note: alpha-equivalent clauses produce identical walk-token sequences
+        and therefore identical embeddings regardless of whether the result
+        is served from the embedding cache or recomputed, so the cache does
+        not distort the goal embeddings.
 
         Goals that cannot be embedded are silently skipped.
         """
         goal_embeddings: list[list[float]] = []
         for g in goals:
-            # Normalise: strip signs and replace Skolem constants with
-            # variables so the embedding captures structural shape only.
             normalised = _deskolemize_clause(g)
             emb = self._base.get_embedding(normalised)
             if emb is not None:
@@ -373,6 +431,114 @@ class GoalDirectedEmbeddingProvider:
                     if len(self._feedback_buffer) < self._config.feedback_buffer_size:
                         self._feedback_buffer.append(pair)
 
+    # ── Productive ancestor tracking ───────────────────────────────────
+
+    def try_expand_from_clause(
+        self,
+        embedding: list[float],
+        parent_clauses: list[Clause],
+    ) -> bool:
+        """Recursively expand the productive reference set.
+
+        Checks if ``embedding`` is close to any current reference point
+        (goal at depth 0 weight 1.0, or any recorded ancestor at its
+        stored depth/weight). If the weighted distance is below
+        ``ancestor_proximity_threshold``, adds the parent clauses as new
+        reference points at ``best_depth + 1`` with weight
+        ``ancestor_decay**(best_depth+1)``, subject to
+        ``ancestor_max_depth`` and ``ancestor_min_weight`` stopping
+        conditions and the ``ancestor_max_count`` cap.
+
+        Returns True if any ancestor was actually added.
+        """
+        if not self._config.ancestor_tracking:
+            return False
+
+        # Snapshot the reference set.
+        with self._goal_scorer._lock:
+            goal_embs = list(self._goal_scorer._goal_embeddings)
+        with self._ancestor_lock:
+            refs = list(self._ancestor_reference)
+
+        if not goal_embs and not refs:
+            return False
+
+        # Find the closest reference point by weighted similarity.
+        best_weighted_sim = -math.inf
+        best_depth = 0
+        for g in goal_embs:
+            sim = _cosine_similarity(embedding, g)
+            if sim > best_weighted_sim:
+                best_weighted_sim = sim
+                best_depth = 0
+        for r in refs:
+            ws = r.weight * _cosine_similarity(embedding, r.embedding)
+            if ws > best_weighted_sim:
+                best_weighted_sim = ws
+                best_depth = r.depth
+
+        dist = (1.0 - best_weighted_sim) / 2.0
+        if dist >= self._config.ancestor_proximity_threshold:
+            return False  # not close enough to any reference
+
+        new_depth = best_depth + 1
+        new_weight = self._config.ancestor_decay ** new_depth
+
+        # Stopping conditions.
+        if new_depth > self._config.ancestor_max_depth:
+            return False
+        if new_weight < self._config.ancestor_min_weight:
+            return False
+
+        expanded = False
+        for parent in parent_clauses:
+            emb = self._base.get_embedding(parent)
+            if emb is None:
+                continue
+            with self._ancestor_lock:
+                self._ancestor_reference.append(
+                    ReferencePoint(embedding=emb, depth=new_depth, weight=new_weight)
+                )
+            expanded = True
+
+        return expanded
+
+    def record_productive_ancestors(self, parent_clauses: list[Clause]) -> None:
+        """Backward-compatible wrapper; inserts parents at depth 1.
+
+        Older call sites (and tests) use this API directly without first
+        probing the reference set. It unconditionally inserts the given
+        parents at depth 1 with weight ``ancestor_decay``, respecting
+        the ``ancestor_min_weight`` / ``ancestor_max_depth`` /
+        ``ancestor_max_count`` stops.  Prefer
+        :meth:`try_expand_from_clause` for the full recursive behaviour.
+        """
+        if not self._config.ancestor_tracking:
+            return
+        new_depth = 1
+        new_weight = self._config.ancestor_decay ** new_depth
+        if new_depth > self._config.ancestor_max_depth:
+            return
+        if new_weight < self._config.ancestor_min_weight:
+            return
+        for parent in parent_clauses:
+            emb = self._base.get_embedding(parent)
+            if emb is None:
+                continue
+            with self._ancestor_lock:
+                self._ancestor_reference.append(
+                    ReferencePoint(embedding=emb, depth=new_depth, weight=new_weight)
+                )
+
+    def clear_ancestors(self) -> None:
+        with self._ancestor_lock:
+            self._ancestor_reference.clear()
+
+    @property
+    def num_ancestors(self) -> int:
+        with self._ancestor_lock:
+            return len(self._ancestor_reference)
+
     # ── Statistics ─────────────────────────────────────────────────────
 
     @property
@@ -385,6 +551,7 @@ class GoalDirectedEmbeddingProvider:
                 "proofs_observed": self._proofs_observed,
                 "feedback_pairs": self._feedback_pairs,
                 "num_goals": self.num_goals,
+                "num_ancestors": self.num_ancestors,
                 "enabled": self._config.enabled,
             }
 
@@ -394,6 +561,7 @@ class GoalDirectedEmbeddingProvider:
         return (
             f"goal_directed: enabled={s['enabled']}, "
             f"goals={s['num_goals']}, "
+            f"ancestors={s['num_ancestors']}, "
             f"observed={s['clauses_observed']}, "
             f"selected={s['clauses_selected']}, "
             f"proofs={s['proofs_observed']}, "
@@ -402,38 +570,53 @@ class GoalDirectedEmbeddingProvider:
 
     # ── Internal ───────────────────────────────────────────────────────
 
+    def _nearest_reference_distance(self, embedding: list[float]) -> float:
+        """Distance to the nearest reference point (goal or ancestor).
+
+        Uses the weighted similarity formula
+        ``(1 - max_i w_i * cos(embedding, r_i)) / 2`` where goals have
+        weight 1.0 and ancestors use their pre-computed ``decay**depth``
+        weight.  Returns 0.5 (neutral) when the reference set is empty,
+        0.0 when ``embedding`` is identical to a depth-0 goal, and
+        increases gently with depth when identical to a deeper
+        ancestor.  Never exceeds 1.0.
+        """
+        with self._goal_scorer._lock:
+            goal_embs = list(self._goal_scorer._goal_embeddings)
+        with self._ancestor_lock:
+            refs = list(self._ancestor_reference)
+
+        if not goal_embs and not refs:
+            return 0.5
+
+        best_weighted_sim = max(
+            [1.0 * _cosine_similarity(embedding, g) for g in goal_embs] +
+            [r.weight * _cosine_similarity(embedding, r.embedding) for r in refs],
+            default=0.0,
+        )
+        return (1.0 - best_weighted_sim) / 2.0
+
     def _enhance_embedding(self, embedding: list[float]) -> list[float]:
-        """Modulate embedding norm by distance to the nearest goal.
+        """Modulate embedding norm by distance to the nearest reference.
 
-        Goal embeddings are stored sign-stripped (positive), so a small
-        distance means the clause is structurally similar to the goal content
-        and is therefore proof-useful.
+        The reference set is the union of registered goal embeddings
+        (depth 0, weight 1.0) and recursively-collected productive
+        ancestor embeddings (each tagged with its own depth and
+        ``decay**depth`` weight). See :meth:`_nearest_reference_distance`
+        for the weighted-similarity formula.
 
-        Strategy: reduce the embedding norm for goal-close (proof-useful)
+        Strategy: reduce the embedding norm for reference-close (proof-useful)
         clauses. The proof_potential_score in ml_selection.py interprets
         smaller norms as higher potential (via inverse sigmoid), so a smaller
         scale → higher score → more likely to be selected.
 
         The scaling factor is:
             scale = 1.0 - goal_proximity_weight * (1.0 - distance)
-
-        Where distance = nearest_goal_distance ∈ [0, 1]:
-        - distance = 0.0 (clause identical to goal content, very proof-useful):
-          scale = 1 - weight  (smallest norm → highest proof potential score)
-        - distance = 1.0 (clause opposite to goal, not proof-useful):
-          scale = 1.0 (unchanged)
-        - distance = 0.5 (neutral): scale = 1 - weight/2
         """
-        distance = self._goal_scorer.nearest_goal_distance(embedding)
+        distance = self._nearest_reference_distance(embedding)
         weight = self._config.goal_proximity_weight
-
-        # Scale factor: lower for goal-close (proof-useful) clauses
-        # → smaller norm → higher proof_potential_score
         scale = 1.0 - weight * (1.0 - distance)
-
-        # Avoid zero scale (would lose direction information)
         scale = max(scale, 0.01)
-
         return [x * scale for x in embedding]
 
 
