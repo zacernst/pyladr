@@ -76,17 +76,15 @@ from pyladr.search.repetition_penalty import (
     RepetitionPenaltyConfig,
     compute_repetition_penalty,
 )
-from pyladr.search.priority_sos import PrioritySOS, _forte_novelty_score
+from pyladr.search.priority_sos import PrioritySOS
 from pyladr.search.selection import (
     GivenSelection,
     SelectionOrder,
     _clause_generality_penalty,
     default_clause_weight,
 )
-from pyladr.search.clause_formatting import (
-    calculate_structural_entropy,
-    format_clause_std,
-)
+from pyladr.search.clause_formatting import format_clause_std
+from pyladr.search.proof_tracing import trace_proof
 from pyladr.search.state import ClauseList, SearchState
 from pyladr.search.statistics import SearchStatistics
 
@@ -106,13 +104,13 @@ from pyladr.search.result_types import ExitCode, Proof, SearchResult  # noqa: E4
 from pyladr.search.options import SearchOptions  # noqa: E402
 
 
-from pyladr.search.t2v_helpers import (  # noqa: E402
-    _get_antecedent_term,
-    _t2v_cosine,
-    compute_t2v_cumulative_histogram,
-    compute_t2v_histogram,
-    format_t2v_histogram,
+from pyladr.search.embedding_helpers import (  # noqa: E402
+    _cosine,
+    compute_cumulative_distance_histogram,
+    compute_distance_histogram,
+    format_distance_histogram,
 )
+from pyladr.search.r2v_subsystem import R2VSearchSubsystem  # noqa: E402
 
 
 # ── Main search engine ──────────────────────────────────────────────────────
@@ -137,58 +135,6 @@ class GivenClauseSearch:
         result = search.run(usable_clauses, sos_clauses)
     """
 
-    # ── EmbeddingManager extraction candidates ──────────────────────────
-    #
-    # The following 22 __slots__ entries and 24 methods belong to embedding
-    # management (FORTE, Tree2Vec, RNN2Vec, proof patterns) and should be
-    # extracted into pyladr.search.embedding_manager.EmbeddingManager.
-    # See embedding_manager.py for the target interface skeleton.
-    #
-    # Slots to move:
-    #   _forte_provider, _forte_embeddings,
-    #   _tree2vec_provider, _tree2vec_embeddings,
-    #   _t2v_kept_since_update, _t2v_online_batch, _t2v_goal_clauses,
-    #   _t2v_goal_provider, _t2v_goal_clause_ids,
-    #   _t2v_distance_window, _t2v_distance_prev_avg,
-    #   _t2v_initial_goal_count, _t2v_all_given_distances,
-    #   _t2v_update_count, _t2v_bg_updater, _t2v_completion_queue,
-    #   _t2v_antecedent_embeddings, _t2v_goal_arg_embs, _t2v_goal_ant_embs,
-    #   _rnn2vec_provider, _rnn2vec_embeddings,
-    #   _r2v_kept_since_update, _r2v_online_batch,
-    #   _r2v_update_count, _r2v_bg_updater, _r2v_completion_queue,
-    #   _r2v_goal_provider, _r2v_goal_clauses,
-    #   _proof_pattern_memory
-    #
-    # Methods to move (24 methods, ~1,400 lines):
-    #   _init_embeddings (L619)
-    #   _maybe_init_rnn2vec (L1207)
-    #   _r2v_select_most_diverse (L1351)
-    #   _r2v_select_random_goal (L1383)
-    #   _do_r2v_online_update (L1421)
-    #   _on_r2v_update_done (L1450)
-    #   _process_r2v_completions (L1454)
-    #   _save_r2v_model (L1484)
-    #   _do_t2v_online_update (L2281)
-    #   _do_t2v_online_update_sync (L2311)
-    #   _on_t2v_update_done (L2429)
-    #   _process_t2v_completions (L2437)
-    #   _dump_t2v_embeddings (L2478)
-    #   _dump_r2v_embeddings (L2570)
-    #   _t2v_cross_arg_distance (L2646)
-    #   _t2v_select_nearest_goal (L2665)
-    #   _t2v_select_maximin (L2707)
-    #   _record_proof_patterns (L2998)
-    #   _compute_t2v_histogram (L3148)
-    #   _compute_t2v_cumulative_histogram (L3196)
-    #
-    # Properties to move:
-    #   forte_embeddings, forte_provider, proof_pattern_memory
-    #
-    # Module-level functions to move:
-    #   format_t2v_histogram (L416), _get_antecedent_term (L453),
-    #   _t2v_cosine (L470)
-    # ──────────────────────────────────────────────────────────────────────
-
     __slots__ = (
         "_opts", "_state", "_selection", "_proofs", "_all_clauses",
         "_symbol_table", "_demod_index", "_parallel_engine",
@@ -198,23 +144,8 @@ class GivenClauseSearch:
         "_nucleus_penalty_config", "_nucleus_pattern_cache",
         "_back_subsume_enabled",
         "_back_subsumption_callback", "_forward_subsumption_callback",
-        # ── EmbeddingManager candidates (22 slots) ──
-        "_forte_provider", "_forte_embeddings",
-        "_tree2vec_provider", "_tree2vec_embeddings",
-        "_t2v_kept_since_update", "_t2v_online_batch", "_t2v_goal_clauses",
-        "_t2v_goal_provider", "_t2v_goal_clause_ids",
-        "_t2v_distance_window", "_t2v_distance_prev_avg",
-        "_t2v_initial_goal_count", "_t2v_all_given_distances",
-        "_t2v_update_count",
-        "_t2v_bg_updater",
-        "_t2v_completion_queue",
-        "_t2v_antecedent_embeddings", "_t2v_goal_arg_embs", "_t2v_goal_ant_embs",
-        "_rnn2vec_provider", "_rnn2vec_embeddings",
-        "_r2v_kept_since_update", "_r2v_online_batch",
-        "_r2v_update_count", "_r2v_bg_updater", "_r2v_completion_queue",
-        "_r2v_goal_provider", "_r2v_goal_clauses",
-        "_proof_pattern_memory",
-        # ── End EmbeddingManager candidates ──
+        # ── RNN2Vec search subsystem ──
+        "_r2v",
         "_hints",
         "_rep_penalty_cache",
     )
@@ -258,15 +189,6 @@ class GivenClauseSearch:
         self._init_penalties()
 
     # ── Initialization helpers ─────────────────────────────────────────
-    #
-    # Planned decomposition (see embedding_manager.py for target interface):
-    #   - EmbeddingManager: owns 22 _forte_*/_tree2vec_*/_t2v_*/_rnn2vec_*/_r2v_*
-    #     slots + 24 methods (~1,400 lines). Skeleton in embedding_manager.py.
-    #   - PenaltyManager: owns _penalty_cache, _repetition_config, _penalty_weight_config,
-    #     _nucleus_*, _rep_penalty_cache with methods get_clause_penalty(), compute_and_cache()
-    #   TODO: Unify the 4 penalty systems (penalty_propagation, repetition_penalty,
-    #   nucleus_penalty, penalty_weight) behind a common protocol.
-    # Blocked today by deep cross-method access (18 embedding slots read/written in 10+ methods).
 
     def _init_selection(self, selection: GivenSelection | None) -> GivenSelection:
         """Build the selection strategy from options."""
@@ -275,9 +197,7 @@ class GivenClauseSearch:
         opts = self._opts
         from pyladr.search.selection import SelectionRule
         has_extra = (
-            opts.entropy_weight > 0 or opts.unification_weight > 0
-            or opts.forte_weight > 0 or opts.proof_guided_weight > 0
-            or opts.tree2vec_weight > 0 or opts.tree2vec_maximin_weight > 0
+            opts.unification_weight > 0
             or opts.rnn2vec_weight > 0 or opts.rnn2vec_random_goal_weight > 0
         )
         if has_extra or opts.weight_ratio != 4:
@@ -285,233 +205,26 @@ class GivenClauseSearch:
                 SelectionRule("A", SelectionOrder.AGE, part=1),
                 SelectionRule("W", SelectionOrder.WEIGHT, part=opts.weight_ratio),
             ]
-            if opts.entropy_weight > 0:
-                rules.append(SelectionRule("E", SelectionOrder.ENTROPY, part=opts.entropy_weight))
             if opts.unification_weight > 0:
                 rules.append(SelectionRule("U", SelectionOrder.UNIFICATION_PENALTY, part=opts.unification_weight))
-            if opts.forte_weight > 0:
-                rules.append(SelectionRule("F", SelectionOrder.FORTE, part=opts.forte_weight))
-            if opts.proof_guided_weight > 0:
-                pg_weight = opts.proof_guided_weight
-                if pg_weight != int(pg_weight):
-                    logger.warning(
-                        "proof_guided_weight=%.2f is not integral, rounding to %d",
-                        pg_weight, round(pg_weight),
-                    )
-                rules.append(SelectionRule("PG", SelectionOrder.PROOF_GUIDED, part=round(pg_weight)))
-            if opts.tree2vec_weight > 0:
-                rules.append(SelectionRule("T2V", SelectionOrder.TREE2VEC, part=opts.tree2vec_weight))
-            if opts.tree2vec_maximin_weight > 0:
-                rules.append(SelectionRule("T2VM", SelectionOrder.TREE2VEC_MAXIMIN, part=opts.tree2vec_maximin_weight))
             if opts.rnn2vec_weight > 0:
-                rules.append(SelectionRule("R2V", SelectionOrder.RNN2VEC, part=opts.rnn2vec_weight))
+                rules.append(SelectionRule("R2V", SelectionOrder.RNN2VEC, part=round(opts.rnn2vec_weight)))
             if opts.rnn2vec_random_goal_weight > 0:
-                rules.append(SelectionRule("RGP", SelectionOrder.RNN2VEC_RANDOM_GOAL, part=opts.rnn2vec_random_goal_weight))
+                rules.append(SelectionRule("RGP", SelectionOrder.RNN2VEC_RANDOM_GOAL, part=round(opts.rnn2vec_random_goal_weight)))
             return GivenSelection(rules=rules)
         return GivenSelection()
 
     def _init_embeddings(self) -> None:
-        """Initialize FORTE, Tree2Vec, and proof-guided embedding state."""
-        opts = self._opts
-
-        # FORTE embedding side structure (clause_id → embedding vector)
-        self._forte_embeddings: dict[int, list[float]] = {}
-        self._forte_provider: object | None = None
-        if opts.forte_embeddings:
-            try:
-                from pyladr.ml.forte.provider import (
-                    ForteEmbeddingProvider,
-                    ForteProviderConfig,
-                )
-                from pyladr.ml.forte.algorithm import ForteConfig
-
-                forte_cfg = ForteProviderConfig(
-                    forte_config=ForteConfig(
-                        embedding_dim=opts.forte_embedding_dim,
-                    ),
-                    cache_max_entries=opts.forte_cache_max_entries,
-                )
-                self._forte_provider = ForteEmbeddingProvider(config=forte_cfg)
-                logger.info(
-                    "FORTE embeddings enabled (dim=%d, cache=%d)",
-                    opts.forte_embedding_dim,
-                    opts.forte_cache_max_entries,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to initialize FORTE provider, continuing without",
-                    exc_info=True,
-                )
-
-        # Tree2Vec embedding side structure (clause_id → embedding vector)
-        self._tree2vec_embeddings: dict[int, list[float]] = {}
-        self._tree2vec_provider: object | None = None
-        self._t2v_kept_since_update: int = 0
-        self._t2v_online_batch: list[Clause] = []
-        self._t2v_goal_clauses: list[Clause] = []
-        self._t2v_goal_clause_ids: list[int] = []
-        self._t2v_goal_provider: object | None = None
-        self._t2v_distance_window: list[float] = []
-        self._t2v_distance_prev_avg: float = 0.0
-        self._t2v_initial_goal_count: int = 0
-        self._t2v_all_given_distances: dict[int, float] = {}
-        self._t2v_update_count: int = 0
-        self._t2v_bg_updater: object | None = None
-        import queue as _queue
-        self._t2v_completion_queue: _queue.SimpleQueue = _queue.SimpleQueue()
-        self._t2v_antecedent_embeddings: dict[int, list[float]] = {}
-        self._t2v_goal_arg_embs: list[list[float]] = []
-        self._t2v_goal_ant_embs: list[list[float]] = []
-        if opts.tree2vec_embeddings:
-            try:
-                from pyladr.ml.tree2vec.provider import (
-                    Tree2VecEmbeddingProvider,
-                    Tree2VecProviderConfig,
-                )
-                from pyladr.ml.tree2vec.algorithm import Tree2VecConfig
-                from pyladr.ml.tree2vec.skipgram import SkipGramConfig
-                from pyladr.ml.tree2vec.walks import WalkConfig
-
-                t2v_cfg = Tree2VecProviderConfig(
-                    tree2vec_config=Tree2VecConfig(
-                        walk_config=WalkConfig(
-                            include_position=opts.tree2vec_include_position,
-                            include_depth=opts.tree2vec_include_depth,
-                            include_path_length=opts.tree2vec_include_path_length,
-                            include_var_identity=opts.tree2vec_include_var_identity,
-                            skip_predicate_wrapper=opts.tree2vec_skip_predicate,
-                        ),
-                        skipgram_config=SkipGramConfig(
-                            embedding_dim=opts.tree2vec_embedding_dim,
-                        ),
-                        composition=opts.tree2vec_composition,
-                    ),
-                    cache_max_entries=opts.tree2vec_cache_max_entries,
-                )
-                # Training requires input file — will be initialized in run()
-                # when clauses are available. Store config for deferred init.
-                self._tree2vec_provider = t2v_cfg
-                logger.info(
-                    "Tree2Vec embeddings enabled (dim=%d, cache=%d)",
-                    opts.tree2vec_embedding_dim,
-                    opts.tree2vec_cache_max_entries,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to initialize Tree2Vec provider, continuing without",
-                    exc_info=True,
-                )
-
-        # RNN2Vec embedding side structure (clause_id → embedding vector)
-        self._rnn2vec_embeddings: dict[int, list[float]] = {}
-        self._rnn2vec_provider: object | None = None
-        self._r2v_kept_since_update: int = 0
-        self._r2v_online_batch: list[Clause] = []
-        self._r2v_update_count: int = 0
-        self._r2v_bg_updater: object | None = None
-        self._r2v_goal_provider: object | None = None
-        self._r2v_goal_clauses: list = []
-        import queue as _queue2
-        self._r2v_completion_queue: _queue2.SimpleQueue = _queue2.SimpleQueue()
-        if opts.rnn2vec_embeddings:
-            try:
-                from pyladr.ml.rnn2vec.provider import (
-                    RNN2VecEmbeddingProvider,
-                    RNN2VecProviderConfig,
-                )
-                from pyladr.ml.rnn2vec.algorithm import RNN2VecConfig
-                from pyladr.ml.rnn2vec.encoder import RNNEmbeddingConfig
-                from pyladr.ml.tree2vec.walks import WalkConfig
-
-                r2v_cfg = RNN2VecProviderConfig(
-                    rnn2vec_config=RNN2VecConfig(
-                        walk_config=WalkConfig(
-                            max_walk_length=opts.rnn2vec_max_walk_length,
-                        ),
-                        rnn_config=RNNEmbeddingConfig(
-                            rnn_type=opts.rnn2vec_rnn_type,
-                            hidden_dim=opts.rnn2vec_hidden_dim,
-                            embedding_dim=opts.rnn2vec_embedding_dim,
-                            input_dim=opts.rnn2vec_input_dim,
-                            num_layers=opts.rnn2vec_num_layers,
-                            bidirectional=opts.rnn2vec_bidirectional,
-                            composition=opts.rnn2vec_composition,
-                        ),
-                        training_epochs=opts.rnn2vec_training_epochs,
-                        learning_rate=opts.rnn2vec_training_lr,
-                    ),
-                    cache_max_entries=opts.rnn2vec_cache_max_entries,
-                )
-                # Training requires clauses — will be initialized in run()
-                # when clauses are available. Store config for deferred init.
-                self._rnn2vec_provider = r2v_cfg
-                logger.info(
-                    "RNN2Vec embeddings enabled (dim=%d, cache=%d)",
-                    opts.rnn2vec_embedding_dim,
-                    opts.rnn2vec_cache_max_entries,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to initialize RNN2Vec provider, continuing without",
-                    exc_info=True,
-                )
-
-        # Wire PrioritySOS to FORTE embeddings for lazy heap init
-        if isinstance(self._state.sos, PrioritySOS) and self._forte_provider is not None:
-            self._state.sos._forte_embeddings_ref = self._forte_embeddings
-
-        # Proof-guided selection: learn from successful proof patterns
-        self._proof_pattern_memory: object | None = None
-        if opts.proof_guided and self._forte_provider is not None:
-            try:
-                from pyladr.search.proof_pattern_memory import (
-                    ProofGuidedConfig,
-                    ProofPatternMemory,
-                )
-
-                pg_config = ProofGuidedConfig(
-                    enabled=True,
-                    exploitation_ratio=opts.proof_guided_exploitation_ratio,
-                    max_patterns=opts.proof_guided_max_patterns,
-                    decay_rate=opts.proof_guided_decay_rate,
-                    min_similarity_threshold=opts.proof_guided_min_similarity,
-                    warmup_proofs=opts.proof_guided_warmup_proofs,
-                )
-                self._proof_pattern_memory = ProofPatternMemory(config=pg_config)
-                logger.info(
-                    "Proof-guided selection enabled (exploitation=%.2f, max_patterns=%d, decay=%.2f)",
-                    pg_config.exploitation_ratio,
-                    pg_config.max_patterns,
-                    pg_config.decay_rate,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to initialize proof pattern memory, continuing without",
-                    exc_info=True,
-                )
-
-        # Wire PrioritySOS to proof-guided scorer
-        if (
-            isinstance(self._state.sos, PrioritySOS)
-            and self._proof_pattern_memory is not None
-            and self._forte_provider is not None
-        ):
-            memory = self._proof_pattern_memory
-            embeddings_ref = self._forte_embeddings
-            from pyladr.search.proof_pattern_memory import proof_guided_score
-
-            def _proof_guided_scorer(clause_id: int) -> float:
-                emb = embeddings_ref.get(clause_id)
-                if emb is None:
-                    return 0.5  # neutral
-                # Diversity score: L1-norm normalized to [0,1]
-                l1 = sum(map(abs, emb))
-                dim = len(emb)
-                max_l1 = dim ** 0.5  # sqrt(dim) for L2-normalized vectors
-                diversity = l1 / max_l1 if max_l1 > 0 else 0.5
-                return proof_guided_score(emb, memory, diversity, memory.config)
-
-            self._state.sos._proof_guided_scorer = _proof_guided_scorer
+        """Initialize RNN2Vec search subsystem."""
+        self._r2v = R2VSearchSubsystem(
+            self._opts,
+            state_fn=lambda: (
+                self._state.sos,
+                self._state.usable,
+                self._proofs,
+                self._format_clause_std,
+            ),
+        )
 
     def _init_penalties(self) -> None:
         """Initialize penalty propagation, repetition, weight adjustment, and nucleus state."""
@@ -597,26 +310,6 @@ class GivenClauseSearch:
         """Register a callback for forward-subsumption events."""
         self._forward_subsumption_callback = callback
 
-    def _on_goal_subsumed(self, subsumed: Clause) -> None:
-        """Remove a subsumed goal clause from the T2V goal-distance tracking list."""
-        if not self._t2v_goal_clause_ids:
-            return
-        try:
-            idx = self._t2v_goal_clause_ids.index(subsumed.id)
-        except ValueError:
-            return
-        goal_scorer = getattr(
-            getattr(self, '_t2v_goal_provider', None), '_goal_scorer', None,
-        )
-        if goal_scorer is not None:
-            goal_scorer.remove_goal(idx)
-        self._t2v_goal_clause_ids.pop(idx)
-        self._t2v_goal_clauses.pop(idx)
-        logger.debug(
-            "Goal clause %d subsumed, removed from distance tracking (%d goals remaining)",
-            subsumed.id, len(self._t2v_goal_clause_ids),
-        )
-
     @property
     def state(self) -> SearchState:
         """Access search state (for testing/inspection)."""
@@ -625,21 +318,6 @@ class GivenClauseSearch:
     @property
     def stats(self) -> SearchStatistics:
         return self._state.stats
-
-    @property
-    def forte_embeddings(self) -> dict[int, list[float]]:
-        """FORTE embedding storage: clause_id → embedding vector."""
-        return self._forte_embeddings
-
-    @property
-    def forte_provider(self) -> object | None:
-        """The active ForteEmbeddingProvider, or None if disabled."""
-        return self._forte_provider
-
-    @property
-    def proof_pattern_memory(self) -> object | None:
-        """The active ProofPatternMemory, or None if disabled."""
-        return self._proof_pattern_memory
 
     def set_proof_callback(self, callback: Callable[[Proof, int], None] | None) -> None:
         """Set or replace the proof callback. Used by online integration."""
@@ -684,8 +362,7 @@ class GivenClauseSearch:
         try:
             while self._inferences_to_make():
                 # Drain any background completions before selecting
-                self._process_t2v_completions()
-                self._process_r2v_completions()
+                self._r2v.process_completions()
 
                 exit_code = self._make_inferences()
                 if exit_code is not None:
@@ -698,12 +375,7 @@ class GivenClauseSearch:
             # SOS exhausted
             return self._make_result(ExitCode.SOS_EMPTY_EXIT)
         finally:
-            if self._t2v_bg_updater is not None:
-                self._t2v_bg_updater.shutdown(drain=True, timeout=5.0)
-                self._process_t2v_completions()
-            if self._r2v_bg_updater is not None:
-                self._r2v_bg_updater.shutdown(drain=True, timeout=5.0)
-                self._process_r2v_completions()
+            self._r2v.shutdown()
 
     # ── Initialization ──────────────────────────────────────────────────
 
@@ -735,489 +407,8 @@ class GivenClauseSearch:
                     c, self._penalty_cache, self._all_clauses,
                 )
 
-        # Batch pre-compute FORTE embeddings for initial clauses
-        if self._forte_provider is not None:
-            initial = [*usable, *sos]
-            if initial:
-                embeddings = self._forte_provider.get_embeddings_batch(initial)  # type: ignore[union-attr]
-                for c, emb in zip(initial, embeddings):
-                    if emb is not None:
-                        self._forte_embeddings[c.id] = emb
-                logger.debug(
-                    "FORTE: pre-computed %d/%d initial embeddings",
-                    len(self._forte_embeddings), len(initial),
-                )
-
-        # Deferred Tree2Vec training: train on initial clauses, then compute embeddings
-        if self._tree2vec_provider is not None and not callable(self._tree2vec_provider):
-            try:
-                from pyladr.ml.tree2vec.provider import Tree2VecEmbeddingProvider
-                from pyladr.ml.tree2vec.vampire_parser import VampireCorpus
-
-                t2v_cfg = self._tree2vec_provider  # stored config from __init__
-                initial = [*usable, *sos]
-
-                if self._opts.tree2vec_model_path:
-                    # Load pre-trained model from disk (offline mode)
-                    provider = Tree2VecEmbeddingProvider.from_saved_model(
-                        model_path=self._opts.tree2vec_model_path,
-                        config=t2v_cfg,
-                    )
-                    self._tree2vec_provider = provider
-                elif initial:
-                    # Train Tree2Vec on all initial clauses
-                    from pyladr.ml.tree2vec.formula_processor import process_vampire_corpus
-                    corpus = VampireCorpus(
-                        sos_clauses=tuple(sos),
-                        goal_clauses=(),
-                        all_terms=(),
-                        all_subterms=(),
-                        symbol_table=self._symbol_table,
-                    )
-                    result = process_vampire_corpus(
-                        corpus,
-                        tree2vec_config=t2v_cfg.tree2vec_config,
-                        augmentation_config=t2v_cfg.augmentation_config,
-                    )
-                    provider = Tree2VecEmbeddingProvider(
-                        tree2vec=result.tree2vec,
-                        config=t2v_cfg,
-                    )
-                    self._tree2vec_provider = provider
-
-                if self._tree2vec_provider is not t2v_cfg and initial:
-                    # Batch compute initial embeddings
-                    provider = self._tree2vec_provider
-                    embeddings = provider.get_embeddings_batch(initial)
-                    for c, emb in zip(initial, embeddings):
-                        if emb is not None:
-                            self._tree2vec_embeddings[c.id] = emb
-                    logger.debug(
-                        "Tree2Vec: pre-computed %d/%d initial embeddings",
-                        len(self._tree2vec_embeddings), len(initial),
-                    )
-                if self._opts.tree2vec_dump_embeddings:
-                    self._dump_t2v_embeddings(0)
-            except Exception:
-                logger.warning(
-                    "Failed to initialize Tree2Vec provider, continuing without",
-                    exc_info=True,
-                )
-                self._tree2vec_provider = None
-
-        # Background updater for Tree2Vec online learning
-        if (
-            self._opts.tree2vec_online_learning
-            and self._opts.tree2vec_bg_update
-            and self._tree2vec_provider is not None
-            and callable(getattr(self._tree2vec_provider, 'bump_model_version', None))
-        ):
-            try:
-                from pyladr.ml.tree2vec.background_updater import BackgroundT2VUpdater
-                self._t2v_bg_updater = BackgroundT2VUpdater(
-                    provider=self._tree2vec_provider,
-                    learning_rate=self._opts.tree2vec_online_lr,
-                    max_updates=self._opts.tree2vec_online_max_updates,
-                    completion_callback=self._on_t2v_update_done,
-                )
-                logger.info(
-                    "Tree2Vec background updater started (lr=%.5f, max_updates=%d)",
-                    self._opts.tree2vec_online_lr,
-                    self._opts.tree2vec_online_max_updates,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to start Tree2Vec background updater, using sync mode",
-                    exc_info=True,
-                )
-
-        # Goal-proximity wrapping for Tree2Vec
-        if (
-            self._opts.tree2vec_goal_proximity
-            and self._tree2vec_provider is not None
-            and callable(getattr(self._tree2vec_provider, 'get_embedding', None))
-        ):
-            from pyladr.search.goal_directed import (
-                GoalDirectedConfig,
-                GoalDirectedEmbeddingProvider,
-                _deskolemize_clause,
-            )
-
-            # Use DENY-justified SOS clauses as the proximity reference.
-            # Goal clauses are deskolemized (signs forced positive, constants
-            # replaced by variables) before embedding, so the proximity
-            # comparison is against structural shape only.
-            all_initial = [*(usable or []), *(sos or [])]
-            self._t2v_goal_clauses = [
-                c for c in all_initial
-                if (c.justification
-                    and len(c.justification) > 0
-                    and c.justification[0].just_type == JustType.DENY)
-            ]
-
-            self._t2v_goal_clause_ids = [c.id for c in self._t2v_goal_clauses]
-            self._t2v_initial_goal_count = len(self._t2v_goal_clauses)
-
-            if self._t2v_goal_clauses:
-                gd_config = GoalDirectedConfig(
-                    enabled=True,
-                    goal_proximity_weight=self._opts.tree2vec_goal_proximity_weight,
-                )
-                gd_provider = GoalDirectedEmbeddingProvider(
-                    base_provider=self._tree2vec_provider,
-                    config=gd_config,
-                )
-                gd_provider.register_goals(self._t2v_goal_clauses)
-                self._t2v_goal_provider = gd_provider
-                logger.info(
-                    "Tree2Vec goal-distance enabled: %d goals, weight=%.2f",
-                    len(self._t2v_goal_clauses),
-                    self._opts.tree2vec_goal_proximity_weight,
-                )
-
-            # Cross-arg proximity: precompute goal arg and antecedent embeddings
-            if self._opts.tree2vec_cross_arg_proximity and self._t2v_goal_clauses:
-                t2v_algo = getattr(self._tree2vec_provider, '_tree2vec', None)
-                if t2v_algo is not None:
-                    for gc in self._t2v_goal_clauses:
-                        # Deskolemise: replace Skolem constants with variables
-                        # so cross-arg embeddings use the same VAR tokens as
-                        # derived clauses, making the comparison meaningful.
-                        gc_norm = _deskolemize_clause(gc)
-                        # Full arg embedding: the argument of P (i.e., i(x₀,x₁))
-                        if gc_norm.literals and gc_norm.literals[0].atom.arity >= 1:
-                            arg_emb = t2v_algo.embed_term(gc_norm.literals[0].atom.args[0])
-                            if arg_emb is not None:
-                                self._t2v_goal_arg_embs.append(arg_emb)
-                                # Antecedent: first arg of i(x₀,x₁) → x₀
-                                ant_term = _get_antecedent_term(gc_norm)
-                                if ant_term is not None:
-                                    ant_emb = t2v_algo.embed_term(ant_term)
-                                    if ant_emb is not None:
-                                        self._t2v_goal_ant_embs.append(ant_emb)
-                                    else:
-                                        self._t2v_goal_ant_embs.append(arg_emb)
-                                else:
-                                    self._t2v_goal_ant_embs.append(arg_emb)
-                    if self._t2v_goal_arg_embs:
-                        logger.info(
-                            "Tree2Vec cross-arg distance: %d goal arg/ant embeddings",
-                            len(self._t2v_goal_arg_embs),
-                        )
-
         # Deferred RNN2Vec initialization
-        self._maybe_init_rnn2vec(usable, sos)
-
-    def _maybe_init_rnn2vec(self, usable, sos) -> None:
-        """Deferred RNN2Vec training: train on initial clauses, then compute embeddings."""
-        if self._rnn2vec_provider is not None and not callable(self._rnn2vec_provider):
-            try:
-                from pyladr.ml.rnn2vec.provider import RNN2VecEmbeddingProvider
-                from pyladr.ml.tree2vec.vampire_parser import VampireCorpus
-
-                r2v_cfg = self._rnn2vec_provider  # stored config from __init__
-                initial = [*usable, *sos]
-
-                if self._opts.rnn2vec_model_path:
-                    # Load pre-trained model from disk (offline mode)
-                    print(f"% RNN2Vec: loading model from {self._opts.rnn2vec_model_path} ...")
-                    provider = RNN2VecEmbeddingProvider.from_saved_model(
-                        model_path=self._opts.rnn2vec_model_path,
-                        config=r2v_cfg,
-                    )
-                    self._rnn2vec_provider = provider
-                    r2v = getattr(provider, "_rnn2vec", None)
-                    if r2v is not None:
-                        print(f"% RNN2Vec: model loaded "
-                              f"(vocab={r2v.vocab_size}, dim={r2v.embedding_dim})")
-                elif initial:
-                    # Train RNN2Vec on all initial clauses
-                    from pyladr.ml.rnn2vec.formula_processor import process_vampire_corpus as r2v_process
-                    n_clauses = len(initial)
-                    epochs = r2v_cfg.rnn2vec_config.training_epochs
-                    rnn_cfg = r2v_cfg.rnn2vec_config.rnn_config
-                    print(f"% RNN2Vec: training on {n_clauses} initial clauses "
-                          f"({epochs} epochs, {rnn_cfg.rnn_type.upper()}, "
-                          f"h={rnn_cfg.hidden_dim}, dim={rnn_cfg.embedding_dim}) ...")
-                    corpus = VampireCorpus(
-                        sos_clauses=tuple(sos),
-                        goal_clauses=(),
-                        all_terms=(),
-                        all_subterms=(),
-                        symbol_table=self._symbol_table,
-                    )
-                    result = r2v_process(
-                        corpus,
-                        rnn2vec_config=r2v_cfg.rnn2vec_config,
-                        augmentation_config=r2v_cfg.augmentation_config,
-                    )
-                    provider = RNN2VecEmbeddingProvider(
-                        rnn2vec=result.rnn2vec,
-                        config=r2v_cfg,
-                    )
-                    self._rnn2vec_provider = provider
-                    stats = result.training_stats
-                    if stats:
-                        print(f"% RNN2Vec: training complete "
-                              f"(loss={stats.get('loss', 0.0):.4f}, "
-                              f"vocab={int(stats.get('vocab_size', 0))})")
-
-                if self._rnn2vec_provider is not r2v_cfg and initial:
-                    # Batch compute initial embeddings
-                    provider = self._rnn2vec_provider
-                    embeddings = provider.get_embeddings_batch(initial)
-                    for c, emb in zip(initial, embeddings):
-                        if emb is not None:
-                            self._rnn2vec_embeddings[c.id] = emb
-                    logger.debug(
-                        "RNN2Vec: pre-computed %d/%d initial embeddings",
-                        len(self._rnn2vec_embeddings), len(initial),
-                    )
-                    if self._opts.rnn2vec_dump_embeddings:
-                        self._dump_r2v_embeddings(0)
-            except Exception as _r2v_exc:
-                import traceback as _tb
-                print(
-                    f"% RNN2Vec init error: {type(_r2v_exc).__name__}: {_r2v_exc}\n"
-                    f"% {''.join(_tb.format_exc()).strip()}",
-                )
-                logger.warning(
-                    "Failed to initialize RNN2Vec provider, continuing without",
-                    exc_info=True,
-                )
-                self._rnn2vec_provider = None
-
-        # Background updater for RNN2Vec online learning
-        if (
-            self._opts.rnn2vec_online_learning
-            and self._rnn2vec_provider is not None
-            and callable(getattr(self._rnn2vec_provider, 'bump_model_version', None))
-        ):
-            try:
-                from pyladr.ml.rnn2vec.background_updater import BackgroundRNN2VecUpdater
-                self._r2v_bg_updater = BackgroundRNN2VecUpdater(
-                    provider=self._rnn2vec_provider,
-                    learning_rate=self._opts.rnn2vec_online_lr,
-                    max_updates=self._opts.rnn2vec_online_max_updates,
-                    completion_callback=self._on_r2v_update_done,
-                )
-                logger.info(
-                    "RNN2Vec background updater started (lr=%.5f, max_updates=%d)",
-                    self._opts.rnn2vec_online_lr,
-                    self._opts.rnn2vec_online_max_updates,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to start RNN2Vec background updater, using sync mode",
-                    exc_info=True,
-                )
-
-        # Goal-proximity wrapping for RNN2Vec
-        wants_goals = (
-            self._opts.rnn2vec_goal_proximity or self._opts.rnn2vec_random_goal_weight > 0
-        )
-        need_goals = (
-            wants_goals
-            and self._rnn2vec_provider is not None
-            and callable(getattr(self._rnn2vec_provider, 'get_embedding', None))
-        )
-        if wants_goals and not need_goals:
-            print(
-                "% RNN2Vec: goal proximity requested but provider not ready "
-                f"(provider={str(self._rnn2vec_provider)[:80]})"
-            )
-        if need_goals:
-            from pyladr.search.goal_directed import (
-                GoalDirectedConfig,
-                GoalDirectedEmbeddingProvider,
-            )
-
-            all_initial = [*(usable or []), *(sos or [])]
-            r2v_goal_clauses = [
-                c for c in all_initial
-                if (c.justification
-                    and len(c.justification) > 0
-                    and c.justification[0].just_type == JustType.DENY)
-            ]
-            self._r2v_goal_clauses = r2v_goal_clauses
-
-            if not r2v_goal_clauses:
-                print(
-                    f"% RNN2Vec: no DENY-justified goal clauses found in "
-                    f"{len(all_initial)} initial clauses; "
-                    f"goal proximity disabled."
-                )
-
-            if r2v_goal_clauses:
-                gd_config = GoalDirectedConfig(
-                    enabled=True,
-                    goal_proximity_weight=self._opts.rnn2vec_goal_proximity_weight,
-                )
-                gd_provider = GoalDirectedEmbeddingProvider(
-                    base_provider=self._rnn2vec_provider,
-                    config=gd_config,
-                )
-                gd_provider.register_goals(r2v_goal_clauses)
-                self._r2v_goal_provider = gd_provider
-                if self._opts.rnn2vec_goal_proximity:
-                    print(f"% RNN2Vec: goal-distance enabled "
-                          f"({len(r2v_goal_clauses)} goals, "
-                          f"weight={self._opts.rnn2vec_goal_proximity_weight:.2f})")
-                if self._opts.rnn2vec_random_goal_weight > 0:
-                    print(f"% RNN2Vec: random-goal selection enabled "
-                          f"({len(r2v_goal_clauses)} goals)")
-                logger.info(
-                    "RNN2Vec goal-distance enabled: %d goals, weight=%.2f",
-                    len(r2v_goal_clauses),
-                    self._opts.rnn2vec_goal_proximity_weight,
-                )
-
-    def _r2v_select_most_diverse(self, sos) -> "Clause | None":
-        """Select the clause in SOS whose RNN2Vec embedding is most diverse.
-
-        Picks the clause with the highest minimum distance to all already-given
-        clause embeddings (maximin diversity). Falls back to None if no
-        embeddings are available for SOS clauses.
-        """
-        given_embs = [
-            emb for cid, emb in self._rnn2vec_embeddings.items()
-            if cid not in {c.id for c in sos}
-        ]
-        if not given_embs:
-            # No given embeddings yet — fall back
-            return None
-
-        best_clause = None
-        best_min_dist = -1.0
-
-        for c in sos:
-            emb = self._rnn2vec_embeddings.get(c.id)
-            if emb is None:
-                continue
-            # Minimum cosine similarity to all given embeddings
-            min_dist = min(_t2v_cosine(emb, ge) for ge in given_embs)
-            # We want the LEAST similar clause (highest diversity)
-            diversity = 1.0 - min_dist
-            if diversity > best_min_dist:
-                best_min_dist = diversity
-                best_clause = c
-
-        return best_clause
-
-    def _r2v_select_random_goal(self, sos) -> "Clause | None":
-        """Select the SOS clause nearest to a randomly-chosen unproven goal.
-
-        Picks a goal at random from the registered R2V goal embeddings, then
-        returns the SOS clause with minimum cosine distance (maximum similarity)
-        to that goal's embedding. Falls back to None if no goal embeddings or
-        SOS embeddings are available.
-        """
-        import random as _random
-
-        if not self._rnn2vec_embeddings:
-            return None
-
-        goal_scorer = getattr(self._r2v_goal_provider, '_goal_scorer', None) if self._r2v_goal_provider is not None else None
-        if goal_scorer is None:
-            return None
-
-        with goal_scorer._lock:
-            goal_embs = list(goal_scorer._goal_embeddings)
-
-        if not goal_embs:
-            return None
-
-        target_emb = _random.choice(goal_embs)
-
-        best_clause = None
-        best_dist = float("inf")
-        for c in sos:
-            emb = self._rnn2vec_embeddings.get(c.id)
-            if emb is None:
-                continue
-            dist = (1.0 - _t2v_cosine(emb, target_emb)) / 2.0
-            if dist < best_dist:
-                best_dist = dist
-                best_clause = c
-
-        return best_clause
-
-    def _do_r2v_online_update(self) -> None:
-        """Trigger an online RNN2Vec update from accumulated batch."""
-        batch = list(self._r2v_online_batch)
-        self._r2v_online_batch.clear()
-        self._r2v_kept_since_update = 0
-
-        if not batch:
-            return
-
-        if self._r2v_bg_updater is not None:
-            self._r2v_bg_updater.submit(batch)
-            self._r2v_update_count += 1
-        elif self._rnn2vec_provider is not None and callable(
-            getattr(self._rnn2vec_provider, 'bump_model_version', None)
-        ):
-            # Synchronous fallback
-            try:
-                self._rnn2vec_provider._rnn2vec.update_online(
-                    batch, learning_rate=self._opts.rnn2vec_online_lr
-                )
-                self._rnn2vec_provider.bump_model_version()
-                self._r2v_update_count += 1
-                if self._opts.rnn2vec_dump_embeddings:
-                    self._dump_r2v_embeddings(self._r2v_update_count)
-                if self._opts.rnn2vec_save_model:
-                    self._save_r2v_model(self._r2v_update_count)
-            except Exception:
-                logger.warning("RNN2Vec online update failed", exc_info=True)
-
-    def _on_r2v_update_done(self, update_count: int, stats: dict) -> None:
-        """Callback from BackgroundRNN2VecUpdater when an update completes."""
-        self._r2v_completion_queue.put((update_count, stats))
-
-    def _process_r2v_completions(self) -> None:
-        """Drain completion notifications from the R2V background updater."""
-        if self._r2v_bg_updater is None:
-            return
-        import queue as _queue
-        while True:
-            try:
-                update_num, stats = self._r2v_completion_queue.get_nowait()
-            except _queue.Empty:
-                break
-            self._r2v_update_count = update_num
-            pairs = stats.get("pairs_trained", 0)
-            loss = stats.get("loss", 0.0)
-            oov = stats.get("oov_skipped", 0)
-            vocab_ext = stats.get("vocab_extended", 0)
-            ext_str = f", vocab_extended={vocab_ext}" if vocab_ext > 0 else ""
-            logger.info(
-                "RNN2Vec bg update #%d complete: pairs=%d, oov_skipped=%d, loss=%.4f%s",
-                update_num, pairs, oov, loss, ext_str,
-            )
-            if not self._opts.quiet:
-                print(
-                    f"\nNOTE: R2V bg update #{update_num} done:"
-                    f" pairs={pairs}, oov_skipped={oov}{ext_str}, loss={loss:.4f}"
-                )
-            if self._opts.rnn2vec_dump_embeddings:
-                self._dump_r2v_embeddings(update_num)
-            if self._opts.rnn2vec_save_model:
-                self._save_r2v_model(update_num)
-
-    def _save_r2v_model(self, update_number: int) -> None:
-        """Save the current RNN2Vec model to disk."""
-        r2v = getattr(self._rnn2vec_provider, "_rnn2vec", None)
-        if r2v is None:
-            return
-        try:
-            r2v.save(self._opts.rnn2vec_save_model)
-            if not self._opts.quiet:
-                print(f"% RNN2Vec: model saved (update #{update_number}) "
-                      f"→ {self._opts.rnn2vec_save_model}")
-        except Exception:
-            logger.warning("Failed to save RNN2Vec model to %r",
-                           self._opts.rnn2vec_save_model, exc_info=True)
+        self._r2v.maybe_init(usable, sos, self._symbol_table)
 
     def _process_initial_clauses(self) -> ExitCode | None:
         """Process initial clauses. Matches C index_and_process_initial_clauses().
@@ -1347,50 +538,16 @@ class GivenClauseSearch:
         4. Generate inferences (given_infer)
         """
         # Select given clause (C: get_given_clause2)
-        # T2V variants: if the ratio cycle wants T2V/T2VM and we have
-        # embeddings, use goal-proximity scoring instead of the age/FORTE fallback.
+        # RNN2Vec variants: if the ratio cycle wants R2V/RGP and we have
+        # embeddings, use embedding-based scoring instead of the age fallback.
         current_order = self._selection._get_current_rule().order
-        if self._tree2vec_embeddings and not self._state.sos.is_empty and current_order in (
-            SelectionOrder.TREE2VEC,
-            SelectionOrder.TREE2VEC_MAXIMIN,
-        ):
-            if current_order == SelectionOrder.TREE2VEC_MAXIMIN:
-                given = self._t2v_select_maximin(self._state.sos)
-                t2v_label = "T2VM"
-            else:
-                given = self._t2v_select_nearest_goal(self._state.sos)
-                t2v_label = "T2V"
-            if given is not None:
-                self._state.sos.remove(given)
-                rule = self._selection._get_current_rule()
-                rule.selected += 1
-                self._selection._advance_cycle()
-                selection_type = t2v_label
-            else:
-                given, selection_type = self._selection.select_given(
-                    self._state.sos, self._state.stats.given
-                )
-        elif self._rnn2vec_embeddings and not self._state.sos.is_empty and current_order in (
-            SelectionOrder.RNN2VEC,
-            SelectionOrder.RNN2VEC_RANDOM_GOAL,
-        ):
-            if current_order == SelectionOrder.RNN2VEC_RANDOM_GOAL:
-                given = self._r2v_select_random_goal(self._state.sos)
-                r2v_label = "RGP"
-            else:
-                # RNN2Vec diversity: pick clause most dissimilar from already-given
-                given = self._r2v_select_most_diverse(self._state.sos)
-                r2v_label = "R2V"
-            if given is not None:
-                self._state.sos.remove(given)
-                rule = self._selection._get_current_rule()
-                rule.selected += 1
-                self._selection._advance_cycle()
-                selection_type = r2v_label
-            else:
-                given, selection_type = self._selection.select_given(
-                    self._state.sos, self._state.stats.given
-                )
+        r2v_given, r2v_label = self._r2v.maybe_select_given(self._state.sos, current_order)
+        if r2v_given is not None:
+            self._state.sos.remove(r2v_given)
+            rule = self._selection._get_current_rule()
+            rule.selected += 1
+            self._selection._advance_cycle()
+            given, selection_type = r2v_given, r2v_label
         else:
             given, selection_type = self._selection.select_given(
                 self._state.sos,
@@ -1403,31 +560,18 @@ class GivenClauseSearch:
         given.given_selection = selection_type
 
         # Lazy demodulation: ensure clause is fully reduced before use.
-        # Must happen BEFORE distance assignment so that given_distance and
-        # _t2v_all_given_distances are stored on the actual clause object
-        # that will appear in the proof trace (demodulate_clause returns a new
-        # Clause with the same id but different literals).
+        # Must happen BEFORE distance assignment so that given_distance is
+        # stored on the actual clause object that will appear in the proof
+        # trace (demodulate_clause returns a new Clause with the same id but
+        # different literals).
         if self._lazy_demod is not None and self._lazy_demod.needs_reduction(given):
             given = self._lazy_demod.ensure_fully_reduced(
                 given, self._demod_index, self._symbol_table,
                 self._opts.lex_order_vars, self._opts.demod_step_limit,
             )
 
-        # Goal distance: compute and store on clause, track for trend reporting.
-        # Done after lazy demodulation so the value lands on the right object.
-        if self._opts.tree2vec_goal_proximity and self._t2v_goal_provider is not None:
-            emb = self._tree2vec_embeddings.get(given.id)
-            goal_scorer = getattr(self._t2v_goal_provider, '_goal_scorer', None)
-            if emb is not None and goal_scorer is not None:
-                gd = None
-                # Cross-arg distance scoring
-                if self._opts.tree2vec_cross_arg_proximity and self._t2v_goal_arg_embs:
-                    gd = self._t2v_cross_arg_distance(emb, given.id)
-                if gd is None:
-                    gd = goal_scorer.nearest_goal_distance(emb)
-                given.given_distance = gd
-                self._t2v_distance_window.append(gd)
-                self._t2v_all_given_distances[given.id] = gd
+        # R2V goal distance tracking for histogram reporting.
+        self._r2v.record_given_distance(given)
 
         # Capture previous given's inference count and ID before overwriting
         prev_id = self._state.stats._current_given_id
@@ -1482,30 +626,6 @@ class GivenClauseSearch:
                         f"\nNOTE: Back_subsumption disabled, ratio of kept"
                         f" to back_subsumed is {ratio} ({elapsed:.2f} sec)."
                     )
-
-        # Periodic T2V goal-distance trend report
-        if (
-            self._opts.tree2vec_goal_proximity
-            and self._t2v_goal_provider is not None
-            and self._opts.tree2vec_proximity_report_interval > 0
-            and len(self._t2v_distance_window) >= self._opts.tree2vec_proximity_report_interval
-            and not self._opts.quiet
-        ):
-            avg = sum(self._t2v_distance_window) / len(self._t2v_distance_window)
-            if self._t2v_distance_prev_avg > 0:
-                trend = avg - self._t2v_distance_prev_avg
-                # Negative trend = avg distance decreasing = getting closer to goals
-                trend_str = f", trend={trend:+.2f}"
-            else:
-                trend_str = ""
-            remaining = len(self._t2v_goal_clause_ids)
-            print(
-                f"\nNOTE: T2V goal distance at given #{self._state.stats.given}:"
-                f" avg={avg:.2f}{trend_str},"
-                f" goals_remaining={remaining}/{self._t2v_initial_goal_count}."
-            )
-            self._t2v_distance_prev_avg = avg
-            self._t2v_distance_window.clear()
 
         # Check max_seconds limit
         if (
@@ -1903,63 +1023,8 @@ class GivenClauseSearch:
         if self._penalty_cache is not None:
             compute_and_cache_penalty(c, self._penalty_cache, self._all_clauses)
 
-        # Compute and cache FORTE embedding for kept clause
-        if self._forte_provider is not None:
-            emb = self._forte_provider.get_embedding(c)  # type: ignore[union-attr]
-            if emb is not None:
-                self._forte_embeddings[c.id] = emb
-
-        # Compute and cache Tree2Vec embedding for kept clause
-        # Use goal-directed provider when available for proximity-enhanced embeddings
-        t2v_emb_provider = self._t2v_goal_provider or self._tree2vec_provider
-        if t2v_emb_provider is not None and callable(getattr(t2v_emb_provider, 'get_embedding', None)):
-            emb = t2v_emb_provider.get_embedding(c)  # type: ignore[union-attr]
-            if emb is not None:
-                self._tree2vec_embeddings[c.id] = emb
-
-            # Cross-arg proximity: also embed the antecedent term
-            if self._opts.tree2vec_cross_arg_proximity and self._tree2vec_provider is not None:
-                ant_term = _get_antecedent_term(c)
-                if ant_term is not None:
-                    t2v_algo = getattr(self._tree2vec_provider, '_tree2vec', None)
-                    if t2v_algo is not None:
-                        ant_emb = t2v_algo.embed_term(ant_term)
-                        if ant_emb is not None:
-                            self._t2v_antecedent_embeddings[c.id] = ant_emb
-
-        # Online Tree2Vec learning: accumulate batch, trigger update at interval
-        if (
-            self._opts.tree2vec_online_learning
-            and self._tree2vec_provider is not None
-            and callable(getattr(self._tree2vec_provider, 'bump_model_version', None))
-        ):
-            max_updates = self._opts.tree2vec_online_max_updates
-            if max_updates == 0 or self._t2v_update_count < max_updates:
-                if len(self._t2v_online_batch) < self._opts.tree2vec_online_batch_size:
-                    self._t2v_online_batch.append(c)
-                self._t2v_kept_since_update += 1
-                if self._t2v_kept_since_update >= self._opts.tree2vec_online_update_interval:
-                    self._do_t2v_online_update()
-
-        # Compute and cache RNN2Vec embedding for kept clause
-        if self._rnn2vec_provider is not None and callable(getattr(self._rnn2vec_provider, 'get_embedding', None)):
-            emb = self._rnn2vec_provider.get_embedding(c)
-            if emb is not None:
-                self._rnn2vec_embeddings[c.id] = emb
-
-        # Online RNN2Vec learning: accumulate batch, trigger update at interval
-        if (
-            self._opts.rnn2vec_online_learning
-            and self._rnn2vec_provider is not None
-            and callable(getattr(self._rnn2vec_provider, 'bump_model_version', None))
-        ):
-            max_updates = self._opts.rnn2vec_online_max_updates
-            if max_updates == 0 or self._r2v_update_count < max_updates:
-                if len(self._r2v_online_batch) < self._opts.rnn2vec_online_batch_size:
-                    self._r2v_online_batch.append(c)
-                self._r2v_kept_since_update += 1
-                if self._r2v_kept_since_update >= self._opts.rnn2vec_online_update_interval:
-                    self._do_r2v_online_update()
+        # Update RNN2Vec state for kept clause
+        self._r2v.on_clause_kept(c, self._all_clauses)
 
         if self._opts.print_kept:
             logger.info("kept:      %s", self._format_clause_std(c))
@@ -2002,469 +1067,6 @@ class GivenClauseSearch:
 
         return None
 
-    def _do_t2v_online_update(self) -> None:
-        """Trigger a Tree2Vec online update.
-
-        If the background updater is running, submits the batch to its queue
-        and returns immediately.  Otherwise falls back to the synchronous
-        implementation.
-        """
-        batch = self._t2v_online_batch
-        if not batch:
-            self._t2v_kept_since_update = 0
-            return
-
-        if self._t2v_bg_updater is not None:
-            accepted = self._t2v_bg_updater.submit(list(batch))
-            if accepted:
-                logger.debug(
-                    "Tree2Vec online update #%d submitted to background thread "
-                    "(given=%d, batch=%d clauses)",
-                    self._t2v_update_count + 1,
-                    self._state.stats.given,
-                    len(batch),
-                )
-            else:
-                logger.debug("Tree2Vec background updater: batch dropped (queue full or limit reached)")
-        else:
-            self._do_t2v_online_update_sync()
-
-        self._t2v_online_batch = []
-        self._t2v_kept_since_update = 0
-
-    def _do_t2v_online_update_sync(self) -> None:
-        """Perform an online Tree2Vec update from the accumulated batch (synchronous)."""
-        batch = self._t2v_online_batch
-        if not batch:
-            self._t2v_kept_since_update = 0
-            return
-
-        self._t2v_update_count += 1
-        update_num = self._t2v_update_count
-        provider = self._tree2vec_provider
-        lr = self._opts.tree2vec_online_lr
-        logger.info(
-            "Tree2Vec online update #%d starting: given=%d, batch=%d clauses, lr=%.5f",
-            update_num, self._state.stats.given, len(batch), lr,
-        )
-        try:
-            stats = provider._tree2vec.update_online(  # type: ignore[union-attr]
-                batch,
-                learning_rate=lr,
-            )
-            new_version = provider.bump_model_version()  # type: ignore[union-attr]
-            pairs = stats.get("pairs_trained", 0)
-            oov = stats.get("oov_skipped", 0)
-            vocab_ext = stats.get("vocab_extended", 0)
-            loss = stats.get("loss", 0.0)
-
-            logger.info(
-                "Tree2Vec online update #%d done: pairs=%d, oov_skipped=%d, loss=%.4f,"
-                " model_v=%d%s",
-                update_num, pairs, oov, loss, new_version,
-                f", vocab_extended={vocab_ext}" if vocab_ext > 0 else "",
-            )
-
-            # Re-embed all SOS clauses with the updated model
-            sos_reembedded = 0
-            t2v_emb_provider = self._t2v_goal_provider or self._tree2vec_provider
-            if t2v_emb_provider is not None and callable(getattr(t2v_emb_provider, 'get_embedding', None)):
-                for c in self._state.sos:
-                    emb = t2v_emb_provider.get_embedding(c)  # type: ignore[union-attr]
-                    if emb is not None:
-                        self._tree2vec_embeddings[c.id] = emb
-                        sos_reembedded += 1
-            logger.info(
-                "Tree2Vec online update #%d: re-embedded %d/%d SOS clauses",
-                update_num, sos_reembedded, len(self._state.sos),
-            )
-
-            # Re-embed SOS antecedent terms for cross-arg proximity
-            if self._opts.tree2vec_cross_arg_proximity:
-                t2v_algo = getattr(provider, '_tree2vec', None)
-                if t2v_algo is not None:
-                    ant_reembedded = 0
-                    for c in self._state.sos:
-                        ant_term = _get_antecedent_term(c)
-                        if ant_term is not None:
-                            ant_emb = t2v_algo.embed_term(ant_term)
-                            if ant_emb is not None:
-                                self._t2v_antecedent_embeddings[c.id] = ant_emb
-                                ant_reembedded += 1
-                    logger.info(
-                        "Tree2Vec online update #%d: re-embedded %d antecedent terms (cross-arg)",
-                        update_num, ant_reembedded,
-                    )
-                    # Re-embed goal arg/ant embeddings
-                    if self._t2v_goal_clauses:
-                        self._t2v_goal_arg_embs.clear()
-                        self._t2v_goal_ant_embs.clear()
-                        for gc in self._t2v_goal_clauses:
-                            gc_norm = _deskolemize_clause(gc)
-                            if gc_norm.literals and gc_norm.literals[0].atom.arity >= 1:
-                                arg_emb = t2v_algo.embed_term(gc_norm.literals[0].atom.args[0])
-                                if arg_emb is not None:
-                                    self._t2v_goal_arg_embs.append(arg_emb)
-                                    ant_term = _get_antecedent_term(gc_norm)
-                                    if ant_term is not None:
-                                        a_emb = t2v_algo.embed_term(ant_term)
-                                        self._t2v_goal_ant_embs.append(a_emb if a_emb is not None else arg_emb)
-                                    else:
-                                        self._t2v_goal_ant_embs.append(arg_emb)
-                        logger.info(
-                            "Tree2Vec online update #%d: re-embedded %d goal cross-arg embeddings",
-                            update_num, len(self._t2v_goal_arg_embs),
-                        )
-
-            # Re-embed goal clauses if goal-proximity is active
-            if self._opts.tree2vec_goal_proximity and self._t2v_goal_clauses:
-                goal_provider = getattr(self, '_t2v_goal_provider', None)
-                if goal_provider is not None and hasattr(goal_provider, 'register_goals'):
-                    goal_provider.register_goals(self._t2v_goal_clauses)
-                    n_goals = len(self._t2v_goal_clauses)
-                    logger.info(
-                        "Tree2Vec online update #%d: re-embedded %d goal clause embeddings",
-                        update_num, n_goals,
-                    )
-
-            if not self._opts.quiet:
-                ext_str = f", vocab_extended={vocab_ext}" if vocab_ext > 0 else ""
-                print(
-                    f"\nNOTE: T2V online update #{update_num}"
-                    f" (given={self._state.stats.given}, batch={len(batch)} clauses):"
-                    f" pairs={pairs}, oov_skipped={oov}{ext_str},"
-                    f" loss={loss:.4f}, model_v={new_version},"
-                    f" sos_reembedded={sos_reembedded}."
-                )
-        except Exception:
-            logger.warning(
-                "Tree2Vec online update #%d failed, continuing",
-                update_num,
-                exc_info=True,
-            )
-            if not self._opts.quiet:
-                print(f"\nNOTE: T2V online update #{update_num} failed, continuing.")
-
-        self._t2v_online_batch = []
-        self._t2v_kept_since_update = 0
-        if self._opts.tree2vec_dump_embeddings:
-            self._dump_t2v_embeddings(update_num)
-
-    def _on_t2v_update_done(self, update_count: int, stats: dict) -> None:
-        """Completion callback called from the background updater thread.
-
-        Must only post to thread-safe structures — no direct mutation of
-        main-thread state here.
-        """
-        self._t2v_completion_queue.put((update_count, stats))
-
-    def _process_t2v_completions(self) -> None:
-        """Drain completion notifications from the background updater.
-
-        Called from the main thread at the start of each given-clause step
-        to process any updates that finished while the main loop was running.
-        """
-        if self._t2v_bg_updater is None:
-            return
-        import queue as _queue
-        while True:
-            try:
-                update_num, stats = self._t2v_completion_queue.get_nowait()
-            except _queue.Empty:
-                break
-            self._t2v_update_count = update_num
-            # Clear stale antecedent/goal embeddings — they recompute lazily
-            self._t2v_antecedent_embeddings.clear()
-            self._t2v_goal_arg_embs.clear()
-            self._t2v_goal_ant_embs.clear()
-            # Re-register goals now that model weights have changed
-            if self._opts.tree2vec_goal_proximity and self._t2v_goal_clauses:
-                goal_provider = getattr(self, "_t2v_goal_provider", None)
-                if goal_provider is not None and hasattr(goal_provider, "register_goals"):
-                    goal_provider.register_goals(self._t2v_goal_clauses)
-            pairs = stats.get("pairs_trained", 0)
-            loss = stats.get("loss", 0.0)
-            oov = stats.get("oov_skipped", 0)
-            vocab_ext = stats.get("vocab_extended", 0)
-            ext_str = f", vocab_extended={vocab_ext}" if vocab_ext > 0 else ""
-            logger.info(
-                "Tree2Vec bg update #%d complete: pairs=%d, oov_skipped=%d, loss=%.4f%s",
-                update_num, pairs, oov, loss, ext_str,
-            )
-            if not self._opts.quiet:
-                print(
-                    f"\nNOTE: T2V bg update #{update_num} done:"
-                    f" pairs={pairs}, oov_skipped={oov}{ext_str}, loss={loss:.4f}"
-                )
-            if self._opts.tree2vec_dump_embeddings:
-                self._dump_t2v_embeddings(update_num)
-
-    def _dump_t2v_embeddings(self, update_number: int) -> None:
-        """Write SOS clause embeddings (plus any goal clauses) to a JSON file.
-
-        Goal clauses are identified by JustType.DENY justification and are
-        always included regardless of whether tree2vec_goal_proximity is
-        enabled or whether they have already been processed as given clauses.
-        Overwrites the file on every call so the latest state is always readable.
-        """
-        import json
-        from pathlib import Path
-        from datetime import datetime
-
-        path = self._opts.tree2vec_dump_embeddings
-        provider = self._tree2vec_provider
-        if provider is None or not callable(getattr(provider, "get_embedding", None)):
-            return
-
-        # Clause IDs that appear in any proof found so far
-        proof_ids: set[int] = {
-            c.id for proof in self._proofs for c in proof.clauses
-        }
-
-        def _is_goal(clause: Clause) -> bool:
-            """True for negated-goal (DENY) clauses regardless of any options."""
-            return bool(
-                clause.justification
-                and clause.justification[0].just_type == JustType.DENY
-            )
-
-        # Collect SOS clauses first, tracking which IDs are already present
-        seen_ids: set[int] = set()
-        to_dump: list[Clause] = []
-        for clause in self._state.sos:
-            seen_ids.add(clause.id)
-            to_dump.append(clause)
-
-        # Add goal clauses that have already been processed (moved to usable)
-        # so they always appear in the output even after being given.
-        for clause in self._state.usable:
-            if clause.id not in seen_ids and _is_goal(clause):
-                seen_ids.add(clause.id)
-                to_dump.append(clause)
-
-        # Model metadata
-        t2v = getattr(provider, "_tree2vec", None)
-        model_meta: dict = {
-            "update_number": update_number,
-            "model_version": getattr(provider, "model_version", None),
-            "vocab_size": t2v.vocab_size if t2v is not None else None,
-            "embedding_dim": t2v.embedding_dim if t2v is not None else None,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-        from pyladr.search.goal_directed import _deskolemize_clause
-
-        entries: list[dict] = []
-        for clause in to_dump:
-            goal = _is_goal(clause)
-            if goal:
-                # Deskolemize before embedding: replace Skolem constants with
-                # variables and force positive sign, matching what the goal-
-                # proximity scorer uses.  This ensures the embedded vector
-                # represents the pure structural shape (e.g. P(i(x,y))) rather
-                # than specific constant identities the model has never seen.
-                embed_clause = _deskolemize_clause(clause)
-            else:
-                embed_clause = clause
-            emb = provider.get_embedding(embed_clause)  # type: ignore[union-attr]
-            entries.append({
-                "id": clause.id,
-                "clause": self._format_clause_std(clause),
-                "weight": clause.weight,
-                "embedding": emb,
-                "in_proof": clause.id in proof_ids,
-                "is_goal": goal,
-            })
-
-        blob = {
-            "format_version": 1,
-            "model": model_meta,
-            "clauses": entries,
-        }
-        try:
-            Path(path).write_text(json.dumps(blob, indent=2), encoding="utf-8")
-            n_goal = sum(1 for e in entries if e["is_goal"])
-            logger.debug(
-                "T2V embeddings dumped: %d clauses (%d goal) → %s (update #%d)",
-                len(entries), n_goal, path, update_number,
-            )
-        except OSError as exc:
-            logger.warning("Failed to write T2V embedding dump to %r: %s", path, exc)
-
-    def _dump_r2v_embeddings(self, update_number: int) -> None:
-        """Write RNN2Vec SOS clause embeddings to a JSON file.
-
-        Same format as _dump_t2v_embeddings. Goal clauses are deskolemized
-        before embedding to match what the goal-proximity scorer uses.
-        Overwrites the file on every call so the latest state is readable.
-        """
-        import json
-        from pathlib import Path
-        from datetime import datetime
-
-        path = self._opts.rnn2vec_dump_embeddings
-        provider = self._rnn2vec_provider
-        if provider is None or not callable(getattr(provider, "get_embedding", None)):
-            return
-
-        proof_ids: set[int] = {
-            c.id for proof in self._proofs for c in proof.clauses
-        }
-
-        def _is_goal(clause: Clause) -> bool:
-            return bool(
-                clause.justification
-                and clause.justification[0].just_type == JustType.DENY
-            )
-
-        seen_ids: set[int] = set()
-        to_dump: list[Clause] = []
-        for clause in self._state.sos:
-            seen_ids.add(clause.id)
-            to_dump.append(clause)
-        for clause in self._state.usable:
-            if clause.id not in seen_ids and _is_goal(clause):
-                seen_ids.add(clause.id)
-                to_dump.append(clause)
-
-        r2v = getattr(provider, "_rnn2vec", None)
-        model_meta: dict = {
-            "update_number": update_number,
-            "model_version": getattr(provider, "model_version", None),
-            "vocab_size": r2v.vocab_size if r2v is not None else None,
-            "embedding_dim": r2v.embedding_dim if r2v is not None else None,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-        from pyladr.search.goal_directed import _deskolemize_clause
-
-        entries: list[dict] = []
-        for clause in to_dump:
-            goal = _is_goal(clause)
-            embed_clause = _deskolemize_clause(clause) if goal else clause
-            emb = provider.get_embedding(embed_clause)  # type: ignore[union-attr]
-            entries.append({
-                "id": clause.id,
-                "clause": self._format_clause_std(clause),
-                "weight": clause.weight,
-                "embedding": emb,
-                "in_proof": clause.id in proof_ids,
-                "is_goal": goal,
-            })
-
-        blob = {
-            "format_version": 1,
-            "model": model_meta,
-            "clauses": entries,
-        }
-        try:
-            Path(path).write_text(json.dumps(blob, indent=2), encoding="utf-8")
-            n_goal = sum(1 for e in entries if e["is_goal"])
-            logger.debug(
-                "R2V embeddings dumped: %d clauses (%d goal) → %s (update #%d)",
-                len(entries), n_goal, path, update_number,
-            )
-        except OSError as exc:
-            logger.warning("Failed to write R2V embedding dump to %r: %s", path, exc)
-
-    def _t2v_cross_arg_distance(self, emb_full: "list[float]", clause_id: int) -> float | None:
-        """Compute cross-argument cosine distance for a clause.
-
-        Returns (1 - max_cross_sim) / 2 mapped to [0, 1] where 0 = very
-        similar to some goal arg/antecedent, or None if cross-arg scoring
-        is not applicable (no antecedent or no goal embeddings).
-        """
-        if not self._t2v_goal_arg_embs:
-            return None
-        emb_ant = self._t2v_antecedent_embeddings.get(clause_id)
-        if emb_ant is None:
-            return None
-        best_sim = -1.0
-        for goal_arg, goal_ant in zip(self._t2v_goal_arg_embs, self._t2v_goal_ant_embs):
-            sim1 = _t2v_cosine(emb_ant, goal_arg)   # x1 vs i(x2,y2)
-            sim2 = _t2v_cosine(goal_ant, emb_full)   # x2 vs i(x1,y1)
-            best_sim = max(best_sim, sim1, sim2)
-        return (1.0 - best_sim) / 2.0
-
-    def _t2v_select_nearest_goal(self, sos: object) -> "Clause | None":
-        """Select the SOS clause with the smallest cosine distance to any goal.
-
-        When cross-arg distance scoring is enabled, uses cross-argument scoring
-        for clauses with extractable antecedents. Falls back to the standard
-        goal-distance scorer for clauses without antecedents.
-        """
-        if not self._tree2vec_embeddings:
-            return None
-
-        use_cross_arg = (
-            self._opts.tree2vec_cross_arg_proximity
-            and self._t2v_goal_arg_embs
-        )
-
-        # Get goal scorer from the goal-directed provider if present
-        goal_scorer = None
-        goal_provider = getattr(self, "_t2v_goal_provider", None)
-        if goal_provider is not None:
-            goal_scorer = getattr(goal_provider, "_goal_scorer", None)
-
-        best_clause: "Clause | None" = None
-        best_dist = float("inf")
-        for c in sos:  # type: ignore[union-attr]
-            emb = self._tree2vec_embeddings.get(c.id)
-            if emb is None:
-                continue
-            dist: float | None = None
-            if use_cross_arg:
-                dist = self._t2v_cross_arg_distance(emb, c.id)
-            if dist is None:
-                # Fallback to standard goal scorer or weight-based
-                if goal_scorer is not None:
-                    dist = goal_scorer.nearest_goal_distance(emb)
-                else:
-                    dist = c.weight / (1.0 + c.weight)
-            if dist < best_dist:
-                best_dist = dist
-                best_clause = c
-
-        return best_clause
-
-    def _t2v_select_maximin(self, sos: object) -> "Clause | None":
-        """Select the SOS clause with the smallest farthest-goal distance (minimax distance).
-
-        For each candidate clause computes the cosine distance to its *farthest*
-        goal (i.e. max distance across all goals), then returns the clause with
-        the smallest such maximum distance.  This is the minimax-distance
-        criterion: it favours clauses broadly close to every goal over those
-        specialised to just one goal.
-
-        Equivalently, in proximity terms this is a maximin selection: the
-        clause with the highest floor similarity across all goals.
-
-        Falls back to weight-based scoring when no goal scorer is available.
-        """
-        if not self._tree2vec_embeddings:
-            return None
-
-        goal_scorer = None
-        goal_provider = getattr(self, "_t2v_goal_provider", None)
-        if goal_provider is not None:
-            goal_scorer = getattr(goal_provider, "_goal_scorer", None)
-
-        best_clause: "Clause | None" = None
-        best_dist = float("inf")
-        for c in sos:  # type: ignore[union-attr]
-            emb = self._tree2vec_embeddings.get(c.id)
-            if emb is None:
-                continue
-            if goal_scorer is not None:
-                dist = goal_scorer.farthest_goal_distance(emb)
-            else:
-                dist = c.weight / (1.0 + c.weight)
-            if dist < best_dist:
-                best_dist = dist
-                best_clause = c
-
-        return best_clause
 
     def _unit_conflict(self, c: Clause) -> ExitCode | None:
         """Check for unit conflict. Matches C cl_process_conflict().
@@ -2523,9 +1125,8 @@ class GivenClauseSearch:
                 # Evict from penalty cache to bound memory growth
                 if self._penalty_cache is not None:
                     self._penalty_cache.remove(victim.id)
-                # Evict FORTE/Tree2Vec embeddings for disabled clause
-                self._forte_embeddings.pop(victim.id, None)
-                self._tree2vec_embeddings.pop(victim.id, None)
+                # Evict RNN2Vec embedding for disabled clause
+                self._r2v.on_clause_evicted(victim.id)
                 logger.debug(
                     "back subsumed: %s by %s",
                     self._format_clause_std(victim),
@@ -2536,11 +1137,6 @@ class GivenClauseSearch:
                     and self._back_subsumption_callback is not None
                 ):
                     self._back_subsumption_callback(c, victim)
-                if (
-                    self._opts.tree2vec_goal_proximity
-                    and self._t2v_goal_provider is not None
-                ):
-                    self._on_goal_subsumed(victim)
 
             # Back-demodulation: new demodulators rewrite kept clauses
             if self._opts.back_demod and self._opts.demodulation:
@@ -2569,9 +1165,8 @@ class GivenClauseSearch:
                         # Evict from penalty cache to bound memory growth
                         if self._penalty_cache is not None:
                             self._penalty_cache.remove(victim.id)
-                        # Evict FORTE/Tree2Vec embeddings for disabled clause
-                        self._forte_embeddings.pop(victim.id, None)
-                        self._tree2vec_embeddings.pop(victim.id, None)
+                        # Evict RNN2Vec embedding for disabled clause
+                        self._r2v.on_clause_evicted(victim.id)
 
                         # Create copy with back-demod justification
                         back_just = Justification(
@@ -2594,7 +1189,7 @@ class GivenClauseSearch:
             ):
                 self._state.stats.sos_limit_deleted += 1
             else:
-                # Pass combined penalty and FORTE score to PrioritySOS for heap ordering
+                # Pass combined penalty to PrioritySOS for heap ordering
                 penalty_val: float | None = None
                 if self._penalty_cache is not None:
                     rec = self._penalty_cache.get(c.id)
@@ -2606,14 +1201,8 @@ class GivenClauseSearch:
                         rep = compute_repetition_penalty(c, self._repetition_config)
                     if rep > 0.0:
                         penalty_val = (penalty_val or 0.0) + rep
-                # Compute FORTE score from stored embedding
-                forte_val: float | None = None
-                if self._forte_provider is not None:
-                    emb = self._forte_embeddings.get(c.id)
-                    if emb is not None:
-                        forte_val = _forte_novelty_score(emb)
-                if isinstance(self._state.sos, PrioritySOS) and (penalty_val is not None or forte_val is not None):
-                    self._state.sos.append(c, penalty_override=penalty_val, forte_score=forte_val)
+                if isinstance(self._state.sos, PrioritySOS) and penalty_val is not None:
+                    self._state.sos.append(c, penalty_override=penalty_val)
                 else:
                     self._state.sos.append(c)
         return None
@@ -2633,13 +1222,7 @@ class GivenClauseSearch:
             self._all_clauses[empty.id] = empty
 
         # Build proof trace (all clauses in derivation)
-        proof_clauses = self._trace_proof(empty)
-
-        # Remove proven goal clauses from T2V proximity list
-        if self._opts.tree2vec_goal_proximity and self._t2v_goal_clause_ids:
-            for c in proof_clauses:
-                if c.id in self._t2v_goal_clause_ids:
-                    self._on_goal_subsumed(c)
+        proof_clauses = trace_proof(empty, self._all_clauses)
 
         proof = Proof(
             empty_clause=empty,
@@ -2650,24 +1233,8 @@ class GivenClauseSearch:
         logger.info("PROOF FOUND (proof %d)", self._state.stats.proofs)
         print(f"PROOF FOUND (proof {self._state.stats.proofs})")
 
-        # Print per-proof T2V goal-distance histogram
-        if self._opts.tree2vec_goal_proximity and self._t2v_goal_provider is not None:
-            histogram = self._compute_t2v_histogram(proof)
-            if histogram is not None and not self._opts.quiet:
-                print(format_t2v_histogram(histogram, self._state.stats.proofs))
-
-            # Print cumulative histogram when 2+ proofs have been found
-            if len(self._proofs) > 1 and not self._opts.quiet:
-                cumulative = self._compute_t2v_cumulative_histogram()
-                if cumulative is not None:
-                    print(format_t2v_histogram(cumulative, proof_num=None))
-
-        # Record proof clause embeddings in proof pattern memory
-        if self._proof_pattern_memory is not None and self._forte_provider is not None:
-            try:
-                self._record_proof_patterns(proof)
-            except Exception:
-                logger.debug("Failed to record proof patterns", exc_info=True)
+        # Print per-proof and cumulative R2V goal-distance histograms
+        self._r2v.on_proof_found(proof, self._proofs, self._opts.quiet)
 
         if self._proof_callback is not None:
             try:
@@ -2683,73 +1250,6 @@ class GivenClauseSearch:
 
         return None
 
-    def _trace_proof(self, empty: Clause) -> list[Clause]:
-        """Trace back through justifications to find all clauses in the proof.
-
-        Matches C proof_id_set() / get_clause_by_id() pattern.
-        """
-        visited: set[int] = set()
-        proof_clauses: list[Clause] = []
-        stack = [empty]
-
-        while stack:
-            c = stack.pop()
-            if c.id in visited:
-                continue
-            visited.add(c.id)
-            proof_clauses.append(c)
-
-            # Follow justification chain
-            for just in c.justification:
-                # Follow clause_ids references
-                for cid in just.clause_ids:
-                    if cid in self._all_clauses and cid not in visited:
-                        stack.append(self._all_clauses[cid])
-                # Follow single clause_id
-                if just.clause_id > 0 and just.clause_id in self._all_clauses:
-                    if just.clause_id not in visited:
-                        stack.append(self._all_clauses[just.clause_id])
-                # Follow para justification
-                if just.para is not None:
-                    for pid in (just.para.from_id, just.para.into_id):
-                        if pid in self._all_clauses and pid not in visited:
-                            stack.append(self._all_clauses[pid])
-
-        # Sort by ID for deterministic output
-        proof_clauses.sort(key=lambda c: c.id)
-        return proof_clauses
-
-    def _record_proof_patterns(self, proof: Proof) -> None:
-        """Record embeddings of proof clauses into proof pattern memory.
-
-        For each clause in the proof trace, obtains its FORTE embedding
-        (from the cache or computed fresh) and records it as a successful
-        proof pattern. Clauses that already have cached embeddings are
-        preferred (they were actively used during search).
-        """
-        provider = self._forte_provider
-        memory = self._proof_pattern_memory
-        embeddings_cache = self._forte_embeddings
-
-        proof_embeddings: list[list[float]] = []
-        for clause in proof.clauses:
-            # Prefer cached embedding (clause was actively used in search)
-            emb = embeddings_cache.get(clause.id)
-            if emb is None:
-                # Compute fresh embedding for proof clauses not in cache
-                emb = provider.get_embedding(clause)  # type: ignore[union-attr]
-            if emb is not None:
-                proof_embeddings.append(emb)
-
-        if proof_embeddings:
-            memory.record_proof(proof_embeddings)  # type: ignore[union-attr]
-            logger.info(
-                "Recorded %d proof pattern embeddings (total patterns: %d, proofs: %d)",
-                len(proof_embeddings),
-                memory.pattern_count,  # type: ignore[union-attr]
-                memory.proof_count,  # type: ignore[union-attr]
-            )
-
     # ── Clause formatting ──────────────────────────────────────────────
 
     def _format_clause_std(self, clause: Clause) -> str:
@@ -2760,9 +1260,6 @@ class GivenClauseSearch:
         """Format conditional selection metric extras for display."""
         from pyladr.search.selection import _clause_generality_penalty
         parts: list[str] = []
-        if self._opts.entropy_weight > 0:
-            entropy = self._calculate_structural_entropy(clause)
-            parts.append(f",ent={entropy:.2f}")
         if self._opts.unification_weight > 0:
             penalty = _clause_generality_penalty(clause)
             parts.append(f",pen={penalty:.2f}")
@@ -2770,53 +1267,14 @@ class GivenClauseSearch:
             rec = self._penalty_cache.get(clause.id)
             if rec is not None and rec.inherited_penalty > 0:
                 parts.append(f",ipen={rec.inherited_penalty:.2f}")
-        if self._opts.tree2vec_goal_proximity and self._t2v_goal_provider is not None:
-            emb = self._tree2vec_embeddings.get(clause.id)
-            if emb is not None:
-                gd: float | None = None
-                # Use cross-arg distance when enabled — matches the selection metric
-                if self._opts.tree2vec_cross_arg_proximity and self._t2v_goal_arg_embs:
-                    gd = self._t2v_cross_arg_distance(emb, clause.id)
-                if gd is None:
-                    goal_scorer = getattr(self._t2v_goal_provider, '_goal_scorer', None)
-                    if goal_scorer is not None:
-                        gd = goal_scorer.nearest_goal_distance(emb)
-                if gd is not None:
-                    parts.append(f",gd={gd:.4f}")
-        if self._opts.rnn2vec_goal_proximity and self._r2v_goal_provider is not None:
-            emb = self._rnn2vec_embeddings.get(clause.id)
-            if emb is not None:
-                goal_scorer = getattr(self._r2v_goal_provider, '_goal_scorer', None)
-                if goal_scorer is not None:
-                    r2v_gd = goal_scorer.nearest_goal_distance(emb)
-                    if r2v_gd is not None:
-                        parts.append(f",r2v_gd={r2v_gd:.4f}")
+        parts.append(self._r2v.format_extras(clause))
         return "".join(parts)
 
-    def _calculate_structural_entropy(self, clause: Clause) -> float:
-        """Calculate Shannon entropy of clause interpreted as tree structure."""
-        return calculate_structural_entropy(clause)
-
     # ── Result construction ─────────────────────────────────────────────
-
-    def _compute_t2v_histogram(self, proof: object) -> dict | None:
-        """Compute conditional probability histogram: P(range|proof) vs P(range|non-proof)."""
-        return compute_t2v_histogram(self._t2v_all_given_distances, proof)
-
-    def _compute_t2v_cumulative_histogram(self) -> dict | None:
-        """Compute cumulative goal-distance histogram across all proofs."""
-        return compute_t2v_cumulative_histogram(self._t2v_all_given_distances, self._proofs)
 
     def _make_result(self, exit_code: ExitCode) -> SearchResult:
         """Construct search result. Matches C collect_prover_results()."""
         self._state.return_code = exit_code
-
-        # Compute T2V goal-distance histogram for the last proof (for end-of-search stats)
-        if self._opts.tree2vec_goal_proximity and self._t2v_goal_provider is not None and self._proofs:
-            if len(self._proofs) > 1:
-                self._state.stats.t2v_distance_histogram = self._compute_t2v_cumulative_histogram()
-            else:
-                self._state.stats.t2v_distance_histogram = self._compute_t2v_histogram(self._proofs[-1])
 
         return SearchResult(
             exit_code=exit_code,
