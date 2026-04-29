@@ -54,8 +54,6 @@ class Term:
     private_symbol: int
     arity: int = 0
     args: tuple[Term, ...] = ()
-    # Container reference (clause, etc.) — not included in hash/eq
-    container: object = field(default=None, compare=False, hash=False)
     # Unique ID for FPA indexing — not included in hash/eq
     term_id: int = field(default=0, compare=False, hash=False)
     # Cached symbol count — computed once in __post_init__, O(1) access thereafter
@@ -261,6 +259,14 @@ class Term:
 _variable_cache: dict[int, Term] = {}
 _variable_cache_lock = threading.Lock()
 
+# Shared rigid constant cache (arity == 0 only).
+# Parallel to _variable_cache: callers building constants via get_rigid_term
+# (parser path, test builders) share one Term object per symnum. Complex
+# terms (arity > 0) are NOT cached — they carry args that make sharing fragile.
+_rigid_constant_cache: dict[int, Term] = {}
+_rigid_constant_cache_lock = threading.Lock()
+_RIGID_CONSTANT_CACHE_CAP = 10_000
+
 
 def get_variable_term(varnum: int) -> Term:
     """Get a shared variable term (C get_variable_term).
@@ -289,6 +295,10 @@ def get_variable_term(varnum: int) -> Term:
 def get_rigid_term(symnum: int, arity: int, args: tuple[Term, ...] = ()) -> Term:
     """Create a rigid (non-variable) term (C get_rigid_term_dangerously).
 
+    For arity == 0 (constants), returns a cached shared Term — repeated
+    calls with the same symnum yield the same object. Complex terms
+    (arity > 0) are always freshly constructed.
+
     Args:
         symnum: Symbol ID (positive integer).
         arity: Number of arguments.
@@ -296,6 +306,19 @@ def get_rigid_term(symnum: int, arity: int, args: tuple[Term, ...] = ()) -> Term
     """
     if symnum <= 0:
         raise ValueError(f"Symbol number must be positive, got {symnum}")
+    if arity == 0:
+        t = _rigid_constant_cache.get(symnum)
+        if t is not None:
+            return t
+        with _rigid_constant_cache_lock:
+            t = _rigid_constant_cache.get(symnum)
+            if t is not None:
+                return t
+            if len(_rigid_constant_cache) > _RIGID_CONSTANT_CACHE_CAP:
+                _rigid_constant_cache.clear()
+            t = Term(private_symbol=-symnum)
+            _rigid_constant_cache[symnum] = t
+            return t
     return Term(private_symbol=-symnum, arity=arity, args=args)
 
 

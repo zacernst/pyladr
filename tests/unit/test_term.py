@@ -49,6 +49,40 @@ class TestTermCreation:
         assert t1 is not t2
         assert t1.varnum != t2.varnum
 
+    def test_rigid_constant_interning(self):
+        """get_rigid_term(sn, 0) returns the same object on repeated calls.
+
+        Memory optimization (cycle 6 T8): arity-0 rigid terms share a
+        single Term object per symbol, reducing per-clause footprint.
+        """
+        c1 = get_rigid_term(42, 0)
+        c2 = get_rigid_term(42, 0)
+        assert c1 is c2
+        assert c1.is_constant
+        assert c1.symnum == 42
+
+    def test_complex_terms_not_interned(self):
+        """Complex rigid terms (arity > 0) must NOT be cached — args make
+        sharing fragile and masks identity-dependent code paths.
+        """
+        x = get_variable_term(0)
+        f1 = get_rigid_term(2, 1, (x,))
+        f2 = get_rigid_term(2, 1, (x,))
+        assert f1 is not f2
+        # Structural equality still holds
+        assert f1.term_ident(f2)
+
+    def test_term_has_no_container_field(self):
+        """Term.container field was removed in cycle 6 T8 (never used,
+        wasted one pointer slot per Term). Direct Term() and factory
+        constructors both produce Terms without `container`.
+        """
+        t_factory = get_rigid_term(5, 0)
+        t_direct = Term(private_symbol=-5)
+        assert "container" not in Term.__slots__
+        assert not hasattr(t_factory, "container")
+        assert not hasattr(t_direct, "container")
+
     def test_constant_term(self):
         t = get_rigid_term(1, 0)
         assert t.is_constant
